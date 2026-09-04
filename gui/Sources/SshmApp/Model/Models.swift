@@ -75,6 +75,29 @@ struct Project: Codable, Equatable, Identifiable {
     var createdAt: Double = Date().timeIntervalSince1970
     var lastOpenedAt: Double = 0
     var order: Int = 0
+
+    init(id: String = UUID().uuidString, name: String, icon: IconRef? = nil,
+         server: String, path: String, agent: String? = nil,
+         createdAt: Double = Date().timeIntervalSince1970,
+         lastOpenedAt: Double = 0, order: Int = 0) {
+        self.id = id; self.name = name; self.icon = icon; self.server = server
+        self.path = path; self.agent = agent; self.createdAt = createdAt
+        self.lastOpenedAt = lastOpenedAt; self.order = order
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // a project without an id, a name or a server is not recoverable
+        id = lenient(c, .id, UUID().uuidString)
+        name = try c.decode(String.self, forKey: .name)
+        server = try c.decode(String.self, forKey: .server)
+        icon = lenient(c, .icon, nil)
+        path = lenient(c, .path, "~")
+        agent = lenient(c, .agent, nil)
+        createdAt = lenient(c, .createdAt, Date().timeIntervalSince1970)
+        lastOpenedAt = lenient(c, .lastOpenedAt, 0)
+        order = lenient(c, .order, 0)
+    }
 }
 
 /// A named command template. Opening a project runs `cd <path>` then this.
@@ -95,6 +118,24 @@ struct AgentDef: Codable, Equatable, Identifiable {
     /// Drop to a prompt in the directory when the command exits.
     var keepShell: Bool = true
     var builtin: Bool = false
+
+    init(id: String, name: String, icon: IconRef? = nil, command: String,
+         shell: String = AgentDef.defaultShell, keepShell: Bool = true,
+         builtin: Bool = false) {
+        self.id = id; self.name = name; self.icon = icon; self.command = command
+        self.shell = shell; self.keepShell = keepShell; self.builtin = builtin
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = lenient(c, .name, id)
+        icon = lenient(c, .icon, nil)
+        command = lenient(c, .command, "")
+        shell = lenient(c, .shell, AgentDef.defaultShell)
+        keepShell = lenient(c, .keepShell, true)
+        builtin = lenient(c, .builtin, false)
+    }
 }
 
 extension AgentDef {
@@ -134,6 +175,16 @@ enum SeedAgents {
     ]
 }
 
+/// Reads a key, falling back to `def` when it is absent or the wrong type.
+///
+/// Swift's synthesized `init(from:)` ignores property defaults entirely: a key
+/// added in a later version makes every older file fail to decode. This config
+/// gains fields regularly, so every type in it decodes leniently.
+private func lenient<T: Decodable, K: CodingKey>(
+    _ c: KeyedDecodingContainer<K>, _ key: K, _ def: T) -> T {
+    ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? def
+}
+
 struct AppSettings: Codable, Equatable {
     var defaultAgent: String = "claude"
     var fontSize: Double = 13
@@ -144,6 +195,21 @@ struct AppSettings: Codable, Equatable {
     /// server, with the remote path typed in. Never writes the clipboard.
     var pasteImagesToServer: Bool = true
     var automaticUpdates: Bool = true
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppSettings()
+        defaultAgent = lenient(c, .defaultAgent, d.defaultAgent)
+        fontSize = lenient(c, .fontSize, d.fontSize)
+        lastSection = lenient(c, .lastSection, d.lastSection)
+        shareConnectionPerServer = lenient(c, .shareConnectionPerServer,
+                                           d.shareConnectionPerServer)
+        theme = lenient(c, .theme, d.theme)
+        pasteImagesToServer = lenient(c, .pasteImagesToServer, d.pasteImagesToServer)
+        automaticUpdates = lenient(c, .automaticUpdates, d.automaticUpdates)
+    }
 }
 
 /// Everything in sshm.json.
@@ -154,6 +220,27 @@ struct MetaFile: Codable, Equatable {
     var projects: [Project] = []
     var agents: [AgentDef] = []
     var settings: AppSettings = AppSettings()
+
+    init(version: Int = 1, seededAgents: Int = 0, servers: [String: ServerMeta] = [:],
+         projects: [Project] = [], agents: [AgentDef] = [],
+         settings: AppSettings = AppSettings()) {
+        self.version = version
+        self.seededAgents = seededAgents
+        self.servers = servers
+        self.projects = projects
+        self.agents = agents
+        self.settings = settings
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = lenient(c, .version, 1)
+        seededAgents = lenient(c, .seededAgents, 0)
+        servers = lenient(c, .servers, [:])
+        projects = lenient(c, .projects, [])
+        agents = lenient(c, .agents, [])
+        settings = lenient(c, .settings, AppSettings())
+    }
 }
 
 // MARK: - view models

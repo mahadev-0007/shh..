@@ -51,10 +51,15 @@ final class MetaStore {
             // and never reach the file, so write it back once
             if decoded != original { needsMigrationSave = true }
         } catch {
-            // Do not touch disk here — a transient read failure must not destroy
-            // data. The backup happens on the next successful save instead.
+            // A file we cannot parse is never overwritten. The old behaviour —
+            // reset to seeds, then save — turned one decoding bug into silent,
+            // permanent loss of every project the user had. Go read-only and
+            // say so instead; the file stays on disk exactly as it is.
             loadError = "\(error)"
+            readOnly = true
             file = MetaFile(seededAgents: SeedAgents.version, agents: SeedAgents.all)
+            NSLog("sshm: could not read %@ — refusing to overwrite it. %@",
+                  store.url.path, "\(error)")
         }
     }
 
@@ -117,20 +122,13 @@ final class MetaStore {
 
     func saveNow() {
         saveWork?.cancel(); saveWork = nil
-        guard !readOnly else { return }
-        if loadError != nil { backupCorruptFile() }
+        // readOnly covers both a newer file format and a file we failed to
+        // parse; in either case writing would destroy someone's data.
+        guard !readOnly, loadError == nil else { return }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(file) else { return }
         store.write(data)
-    }
-
-    private func backupCorruptFile() {
-        let stamp = Int(Date().timeIntervalSince1970)
-        let dest = store.url.deletingLastPathComponent()
-            .appendingPathComponent("sshm.json.bak-\(stamp)")
-        try? FileManager.default.copyItem(at: store.url, to: dest)
-        loadError = nil
     }
 
     // MARK: - mutation
