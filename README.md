@@ -21,13 +21,13 @@ dependencies beyond `ssh` itself.
 │   press / to filter                                              │
 │   SERVER       CONNECTION                                   AUTH │
 │   ────────────────────────────────────────────────────────────   │
-│ ❯ saas-server  root@139.5.189.22                            PASS │
+│ ❯ saas-server  root@203.0.113.10                            PASS │
 │ ● prod-web     root@10.0.0.5                                PASS │
 │ ● db-01        admin@10.0.0.9:2222                          KEY  │
 │ ● staging      ubuntu@staging.example.com                   PASS │
 │                                                                  │
 │   ────────────────────────────────────────────────────────────   │
-│   ssh root@139.5.189.22                                          │
+│   ssh root@203.0.113.10                                          │
 │   ↑↓ move   ⏎ connect   / filter   a add   e edit   q quit       │
 ╰──────────────────────────────────────────────────────────────────╯
 ```
@@ -57,7 +57,7 @@ session, and puts everything back when you exit:
 
 * the **cursor** takes the server's colour
 * the **background** gets a faint wash of that hue (`#311f27` for a rose server)
-* the **window title** becomes `🤫 saas-server · root@139.5.189.22:22`
+* the **window title** becomes `🤫 saas-server · root@203.0.113.10:22`
 * the session is framed top and bottom by a full-width rule in the server colour
 
 So the machine you are on stays identifiable the entire time you are on it, not
