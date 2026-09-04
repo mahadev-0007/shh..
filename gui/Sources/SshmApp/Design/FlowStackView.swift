@@ -74,6 +74,7 @@ final class FlowStackView: NSView {
 
 /// A vertical stack that fills its container's width — the body of every page.
 final class PageStack: NSStackView {
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         orientation = .vertical

@@ -190,6 +190,13 @@ enum Theme {
                        blue: 0.99 - (1 - h.blueComponent) * 0.06, alpha: 1)
     }
 
+    /// Resize an already-open terminal. SwiftTerm recomputes rows and columns
+    /// from the font and tells the remote side, so this takes effect live.
+    static func applyFontSize(_ size: CGFloat, to view: TerminalView) {
+        terminalFontSize = size
+        view.font = Fonts.mono(size)
+    }
+
     static func apply(to view: TerminalView, hue: NSColor) {
         let dark = view.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         view.font = Fonts.mono(terminalFontSize)

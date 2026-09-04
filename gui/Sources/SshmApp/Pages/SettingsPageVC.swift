@@ -3,6 +3,7 @@ import AppKit
 /// Agents, appearance, and where everything is stored.
 final class SettingsPageVC: PageViewController {
     private var tab = "agents"
+    private weak var sizeReadout: NSTextField?
 
     override var pillItems: [PillItem] {
         [PillItem(id: "agents", title: "Agents"),
@@ -136,7 +137,18 @@ final class SettingsPageVC: PageViewController {
                             target: self, action: #selector(fontSizeChanged))
         size.numberOfTickMarks = 12
         size.allowsTickMarkValuesOnly = true
+        size.isContinuous = true
         size.widthAnchor.constraint(equalToConstant: 220).isActive = true
+
+        let readout = NSTextField(labelWithString:
+            "\(Int(AppModel.shared.settings.fontSize)) pt")
+        readout.font = Fonts.mono(12)
+        readout.textColor = Text.secondary
+        sizeReadout = readout
+        let sizeRow = NSStackView(views: [size, readout])
+        sizeRow.orientation = .horizontal
+        sizeRow.spacing = Space.md
+        sizeRow.alignment = .centerY
 
         let share = NSSwitch()
         share.state = AppModel.shared.settings.shareConnectionPerServer ? .on : .off
@@ -154,8 +166,8 @@ final class SettingsPageVC: PageViewController {
         defaultAgent.target = self
         defaultAgent.action = #selector(defaultAgentChanged)
 
-        body.addWide(FormRow("Terminal size", size,
-                             hint: "Applies to sessions opened from now on."))
+        body.addWide(FormRow("Terminal size", sizeRow,
+                             hint: "Applies to open sessions immediately."))
         body.addWide(FormRow("Default agent", defaultAgent))
         let paste = NSSwitch()
         paste.state = AppModel.shared.settings.pasteImagesToServer ? .on : .off
@@ -175,9 +187,21 @@ final class SettingsPageVC: PageViewController {
         (view.window?.contentViewController as? RootSplitViewController)?.shell
     }
 
+    /// Only the agents grid reflects external data; the rest of Settings is
+    /// live controls that must survive their own writes.
+    override func handleModelChange() {
+        if tab == "agents" { reload() }
+    }
+
     @objc private func fontSizeChanged(_ s: NSSlider) {
-        AppModel.shared.updateSettings { $0.fontSize = s.doubleValue }
-        Theme.terminalFontSize = CGFloat(s.doubleValue)
+        let size = CGFloat(s.doubleValue)
+        AppModel.shared.updateSettings { $0.fontSize = Double(size) }
+        // apply to sessions already open, not just future ones
+        for session in rootShell?.terminals.sessions ?? [] {
+            Theme.applyFontSize(size, to: session.terminal)
+        }
+        Theme.terminalFontSize = size
+        sizeReadout?.stringValue = "\(Int(size)) pt"
     }
     @objc private func pasteImagesChanged(_ s: NSSwitch) {
         AppModel.shared.updateSettings { $0.pasteImagesToServer = s.state == .on }

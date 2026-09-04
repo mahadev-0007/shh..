@@ -39,16 +39,15 @@ class PageViewController: NSViewController {
     private let actionSlot = NSStackView()
     private var backButton: SoftButton?
     private var scroll: NSScrollView!
+    /// Content width is a computed constant, updated on layout.
+    ///
+    /// It cannot be a `<= maxContent` constraint: a required max-width anywhere
+    /// in the page bounds the whole view's fitting size, and NSSplitViewController
+    /// then sizes the content area to that — which shrinks the window's usable
+    /// width instead of just the text column.
+    private var bodyWidth: NSLayoutConstraint!
+    private var headerWidth: NSLayoutConstraint!
     private var scrollView: NSScrollView { scroll }
-
-    /// "As wide as the container allows", yielding to the required max-width.
-    private func preferFull(_ view: NSView, in container: NSView,
-                            inset: CGFloat) -> NSLayoutConstraint {
-        let c = view.widthAnchor.constraint(equalTo: container.widthAnchor,
-                                            constant: -inset * 2)
-        c.priority = .defaultHigh
-        return c
-    }
 
     override func loadView() {
         let root = ThemedCanvas()
@@ -86,6 +85,9 @@ class PageViewController: NSViewController {
         fullBleed.translatesAutoresizingMaskIntoConstraints = false
         fullBleed.isHidden = true
 
+        headerWidth = header.widthAnchor.constraint(equalToConstant: 600)
+        bodyWidth = body.widthAnchor.constraint(equalToConstant: 600)
+
         root.addSubview(header)
         root.addSubview(scroll)
         root.addSubview(fullBleed)
@@ -95,8 +97,7 @@ class PageViewController: NSViewController {
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Space.page),
             header.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor,
                                              constant: -Space.page),
-            header.widthAnchor.constraint(lessThanOrEqualToConstant: Space.maxContent),
-            preferFull(header, in: root, inset: Space.page),
+            headerWidth,
 
             titles.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             titles.topAnchor.constraint(equalTo: header.topAnchor),
@@ -124,11 +125,18 @@ class PageViewController: NSViewController {
             // Content stops widening past maxContent, but still needs a
             // definite width: `<=` alone leaves the stack sized to its content,
             // which collapses every hand-laid-out grid inside it to one column.
-            body.widthAnchor.constraint(lessThanOrEqualToConstant: contentWidthLimit),
-            preferFull(body, in: doc, inset: Space.page),
+            bodyWidth,
             body.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -Space.xxl),
         ])
         view = root
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let available = view.bounds.width - Space.page * 2
+        let w = max(200, min(available, contentWidthLimit))
+        if headerWidth.constant != w { headerWidth.constant = w }
+        if bodyWidth.constant != w { bodyWidth.constant = w }
     }
 
     /// Hand the whole page to one view, or pass nil to go back to the normal
@@ -187,7 +195,12 @@ class PageViewController: NSViewController {
             self, selector: #selector(modelChanged), name: .sshmDidChange, object: nil)
     }
 
-    @objc private func modelChanged() { reload() }
+    @objc private func modelChanged() { handleModelChange() }
+
+    /// Rebuild on a model change. Pages that own live controls override this:
+    /// reloading while the user is dragging a slider destroys the control
+    /// mid-gesture, which looks exactly like the control being broken.
+    func handleModelChange() { reload() }
 }
 
 

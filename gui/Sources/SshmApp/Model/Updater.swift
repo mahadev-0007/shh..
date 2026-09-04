@@ -66,8 +66,11 @@ final class Updater: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
-        let live = (NSApp.delegate as? AppDelegate)?
-            .main?.root.shell.terminals.sessions.filter(\.isRunning).count ?? 0
+        // reach the window controller through the window list rather than the
+        // app delegate, so this file doesn't depend on the app's entry point
+        let live = NSApp.windows
+            .compactMap { $0.windowController as? MainWindowController }
+            .first?.root.shell.terminals.sessions.filter(\.isRunning).count ?? 0
         guard live > 0 else { return false }
 
         let a = NSAlert()
