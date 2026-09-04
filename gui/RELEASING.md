@@ -97,6 +97,21 @@ xcrun notarytool submit "$ARCHIVE" --keychain-profile ark --wait
 xcrun stapler staple "$APP"
 ```
 
+## The feed is CDN-cached
+
+`raw.githubusercontent.com` caches for around five minutes. Straight after a
+release the feed can still serve the previous appcast, so a client that checks
+immediately sees no update. This is expected; it resolves itself. To confirm
+what is actually on `main`, bypass the cache:
+
+```sh
+gh api repos/<owner>/<repo>/contents/gui/appcast.xml --jq '.content' | base64 -d
+```
+
+The repository name contains `..`, which is a legal path segment (it is not the
+same as the `..` traversal token). Verified: `raw.githubusercontent.com` and the
+release download URLs both serve it unmodified.
+
 ## Checking it works
 
 - `./release.sh <v> --dry-run` then inspect `gui/appcast.xml` and the zip in
