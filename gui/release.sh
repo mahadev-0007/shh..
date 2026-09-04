@@ -34,9 +34,12 @@ SIGN_TOOL=$(find .build/artifacts -name sign_update -type f | head -1)
 
 # --- version -----------------------------------------------------------------
 echo "$VERSION" > VERSION
-git add VERSION 2>/dev/null || true
-git commit -qm "Release $VERSION" 2>/dev/null || true
-git tag -f "v$VERSION" >/dev/null
+# a dry run must not leave a commit or a tag behind
+if [ -z "$DRY_RUN" ]; then
+    git add VERSION 2>/dev/null || true
+    git commit -qm "Release $VERSION" 2>/dev/null || true
+    git tag -f "v$VERSION" >/dev/null
+fi
 
 # --- build -------------------------------------------------------------------
 ./build.sh release

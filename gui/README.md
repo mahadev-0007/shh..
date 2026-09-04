@@ -98,6 +98,23 @@ own in Settings. An empty command means "just cd there".
 | `⌃⇧⌘F` | macOS full screen |
 | `⌘,` | Settings |
 
+## Versioning and updates
+
+The app carries a version (`gui/VERSION` → `CFBundleShortVersionString`) and a
+build number (the commit count → `CFBundleVersion`), and updates itself through
+[Sparkle](https://sparkle-project.org). Settings → Updates shows the version, a
+"check now" button and an automatic-check toggle; ⌘-menu → Check for Updates…
+does the same.
+
+Because the app has no Developer ID, updates are authenticated by an EdDSA
+signature on each archive rather than by code signing. Releases live on GitHub
+Releases with an `appcast.xml` feed in the repo. See
+[RELEASING.md](RELEASING.md) — including the one-time Gatekeeper step each
+teammate needs on first install.
+
+If ssh sessions are live when an update is ready, the app says so and asks
+before relaunching instead of dropping them.
+
 ## Storage
 
 | File | Holds |

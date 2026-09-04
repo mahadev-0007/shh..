@@ -7,6 +7,7 @@ final class SettingsPageVC: PageViewController {
     override var pillItems: [PillItem] {
         [PillItem(id: "agents", title: "Agents"),
          PillItem(id: "appearance", title: "Appearance"),
+         PillItem(id: "updates", title: "Updates"),
          PillItem(id: "config", title: "Config")]
     }
     override var selectedPill: String? { tab }
@@ -23,6 +24,7 @@ final class SettingsPageVC: PageViewController {
         setActions([])
         switch tab {
         case "appearance": buildAppearance()
+        case "updates":    buildUpdates()
         case "config":     buildConfig()
         default:           buildAgents()
         }
@@ -187,6 +189,54 @@ final class SettingsPageVC: PageViewController {
     @objc private func defaultAgentChanged(_ p: NSPopUpButton) {
         guard let id = p.selectedItem?.representedObject as? String else { return }
         AppModel.shared.updateSettings { $0.defaultAgent = id }
+    }
+
+    // MARK: - updates
+
+    private func buildUpdates() {
+        pageSubtitle = "Version \(AppVersion.display)"
+
+        let auto = NSSwitch()
+        auto.state = AppModel.shared.settings.automaticUpdates ? .on : .off
+        auto.target = self
+        auto.action = #selector(autoUpdateChanged)
+
+        let check = SoftButton("Check now", symbol: "arrow.triangle.2.circlepath",
+                               style: .secondary)
+        check.onClick = { Updater.shared.checkForUpdates() }
+
+        let version = NSTextField(labelWithString: AppVersion.display)
+        version.font = Fonts.mono(12)
+        version.textColor = Text.primary
+
+        body.addWide(FormRow("Version", version))
+        body.addWide(FormRow("Automatic", auto,
+                             hint: "Check for updates in the background every few hours. "
+                                 + "You are always asked before anything installs."))
+        body.addWide(FormRow("", check))
+
+        if let last = Updater.shared.lastCheck {
+            let f = DateFormatter()
+            f.dateStyle = .medium; f.timeStyle = .short
+            let l = NSTextField(labelWithString: "Last checked \(f.string(from: last))")
+            l.font = Fonts.caption
+            l.textColor = Text.muted
+            body.addWide(l)
+        }
+
+        if !Updater.shared.isConfigured {
+            let note = NSTextField(wrappingLabelWithString:
+                "This is a local build, so it has no update feed. Released builds carry one "
+              + "and update themselves.")
+            note.font = Fonts.caption
+            note.textColor = Text.muted
+            note.wraps(lines: 3)
+            body.addWide(note)
+        }
+    }
+
+    @objc private func autoUpdateChanged(_ s: NSSwitch) {
+        Updater.shared.setAutomatic(s.state == .on)
     }
 
     // MARK: - config
