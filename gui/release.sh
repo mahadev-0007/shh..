@@ -137,4 +137,4 @@ git push origin HEAD --tags
 
 echo
 echo "released $VERSION ($BUILD)"
-echo "feed: https://raw.githubusercontent.com/$REPO/main/appcast.xml"
+echo "feed: https://raw.githubusercontent.com/$REPO/main/gui/appcast.xml"

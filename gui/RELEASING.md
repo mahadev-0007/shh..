@@ -27,7 +27,7 @@ signature, which `sign_update --verify` rejects.
 
    ```sh
    gh auth login
-   gh repo create <owner>/arkconnect --private --source=. --push
+   gh repo create <owner>/<repo> --public --source=. --push
    ```
 
 2. **Tell the release script where it lives.** Both files are git-ignored,
@@ -35,8 +35,8 @@ signature, which `sign_update --verify` rejects.
 
    ```sh
    cd gui
-   echo "<owner>/arkconnect" > .github-repo
-   echo "https://raw.githubusercontent.com/<owner>/arkconnect/main/appcast.xml" > .feed-url
+   echo "<owner>/<repo>" > .github-repo
+   echo "https://raw.githubusercontent.com/<owner>/<repo>/main/gui/appcast.xml" > .feed-url
    ```
 
    `.feed-url` is what gets baked into the app as `SUFeedURL`. Until it exists,
