@@ -1,0 +1,1430 @@
+#!/usr/bin/env bash
+#
+# sshm - a fast, vibrant SSH connection manager in one bash script
+#
+# No daemon, no python/node, no ncurses. Written for bash 3.2 so it runs on
+# stock macOS /bin/bash as well as modern bash on Linux.
+#
+# Every server is assigned a stable colour from its name. That colour tints the
+# server's dot, its selection bar, and an aura that glows out along the screen
+# border from whichever row you are on - so you always know where you are, and
+# where you are about to connect.
+#
+# Config: ${XDG_CONFIG_HOME:-$HOME/.config}/sshm/servers.conf  (mode 0600)
+# Format: name|host|user|port|auth|secret
+#         auth   = pass | key
+#         secret = base64(password)  when auth=pass
+#                  path to identity  when auth=key
+#
+# NOTE: base64 is encoding, not encryption. See README.md.
+
+VERSION="3.0.0"
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sshm"
+CONF_FILE="$CONF_DIR/servers.conf"
+
+ESC=$'\033'
+
+# Parallel arrays, indexed by server position (bash 3.2 has no hashes).
+NAMES=(); HOSTS=(); USERS=(); PORTS=(); AUTHS=(); SECRETS=(); HAYS=(); COLORS=()
+
+FIDX=()          # indices matching the current filter
+FILTER=""        # active filter text
+FILTERING=0      # 1 while typing in the filter bar
+SEL=0            # selected position within FIDX
+OFF=0            # viewport scroll offset
+ALT=0            # 1 while the alternate screen is active
+STTY_SAVE=""
+SCREEN=(); CONTENT=()
+FLASH=""         # transient status message shown in the footer
+IW=76; TOTALW=80; HUEI=0; GLOW_ROW=3
+
+# ----------------------------------------------------------------- theme ----
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    UI_COLOR=1
+else
+    UI_COLOR=0
+fi
+
+UI_TRUE=0
+case "${COLORTERM:-}" in truecolor|24bit) UI_TRUE=1 ;; esac
+
+if [ $UI_COLOR -eq 1 ]; then
+    R=$'\033[0m';   B=$'\033[1m'
+    ACC=$'\033[38;5;141m'
+    ACC2=$'\033[38;5;51m'
+    TXT=$'\033[38;5;252m'
+    MUTE=$'\033[38;5;245m'
+    FAINT=$'\033[38;5;240m'
+    RULE=$'\033[38;5;237m'
+    OK=$'\033[38;5;84m'
+    WARN=$'\033[38;5;221m'
+    BAD=$'\033[38;5;210m'
+else
+    R=""; B=""; ACC=""; ACC2=""; TXT=""; MUTE=""; FAINT=""; RULE=""
+    OK=""; WARN=""; BAD=""
+fi
+
+# Per-server hue palette: 12 vivid colours, truecolor with a 256-colour
+# fallback (bright / mid / dim, used for the aura falloff).
+NHUES=12
+HUE_RGB=(167 139 250   34 211 238   52 211 153   251 191  36
+         251 113 133   56 189 248  163 230  53  232 121 249
+         251 146  60   45 212 191  129 140 248  248 113 113)
+HUE_256=(141 104  61    51  44  30   84  78  29  221 178 136
+         210 168  95    45  39  24  155 149  64  213 170  90
+         215 172 130    80  73  29  105  99  61  203 167  88)
+HUE_NAME=(violet cyan emerald amber rose sky lime fuchsia orange teal indigo red)
+
+# wordmark gradient: violet -> cyan
+RAMP_R=(124 106 88 70 52 34)
+RAMP_G=(92 116 140 164 188 211)
+RAMP_B=(255 252 249 245 242 238)
+RAMP_256=(141 135 99 63 45 51)
+
+SPACES=""; DASHES=""
+build_pads() {
+    local i=0
+    while [ $i -lt 400 ]; do SPACES="$SPACES "; DASHES="${DASHES}─"; i=$((i + 1)); done
+}
+
+die()  { printf '%ssshm: %s%s\n' "$BAD" "$*" "$R" >&2; exit 1; }
+warn() { printf '%ssshm: %s%s\n' "$WARN" "$*" "$R" >&2; }
+
+# ---------------------------------------------------------------- colour ----
+
+rampv() {   # rampv <var> <0..5>
+    if [ $UI_COLOR -eq 0 ]; then printf -v "$1" '%s' ''; return 0; fi
+    if [ $UI_TRUE -eq 1 ]; then
+        printf -v "$1" '\033[38;2;%d;%d;%dm' \
+            "${RAMP_R[$2]}" "${RAMP_G[$2]}" "${RAMP_B[$2]}"
+    else
+        printf -v "$1" '\033[38;5;%dm' "${RAMP_256[$2]}"
+    fi
+}
+
+huev() {    # huev <var> <hue index> : the hue at full brightness
+    if [ $UI_COLOR -eq 0 ]; then printf -v "$1" '%s' ''; return 0; fi
+    local b=$(( $2 * 3 ))
+    if [ $UI_TRUE -eq 1 ]; then
+        printf -v "$1" '\033[38;2;%d;%d;%dm' \
+            "${HUE_RGB[$b]}" "${HUE_RGB[$((b + 1))]}" "${HUE_RGB[$((b + 2))]}"
+    else
+        printf -v "$1" '\033[38;5;%dm' "${HUE_256[$b]}"
+    fi
+}
+
+barv() {    # barv <var> <hue index> : selection bar, hue background + dark text
+    if [ $UI_COLOR -eq 0 ]; then printf -v "$1" '%s' ''; return 0; fi
+    local b=$(( $2 * 3 ))
+    if [ $UI_TRUE -eq 1 ]; then
+        printf -v "$1" '\033[48;2;%d;%d;%dm\033[38;2;12;12;20m\033[1m' \
+            "${HUE_RGB[$b]}" "${HUE_RGB[$((b + 1))]}" "${HUE_RGB[$((b + 2))]}"
+    else
+        printf -v "$1" '\033[48;5;%dm\033[38;5;16m\033[1m' "${HUE_256[$b]}"
+    fi
+}
+
+# The aura: border brightness falls off with distance from the selected row,
+# so the glow appears to radiate out of the server you have highlighted.
+aurav() {   # aurav <var> <screen row>
+    if [ $UI_COLOR -eq 0 ]; then printf -v "$1" '%s' ''; return 0; fi
+    local d=$(( $2 - GLOW_ROW ))
+    [ $d -lt 0 ] && d=$(( 0 - d ))
+    local b=$(( HUEI * 3 ))
+    if [ $UI_TRUE -eq 1 ]; then
+        local it=$(( 108 - d * 10 ))
+        [ $it -gt 100 ] && it=100
+        [ $it -lt 16 ] && it=16
+        printf -v "$1" '\033[38;2;%d;%d;%dm' \
+            $(( HUE_RGB[b] * it / 100 )) \
+            $(( HUE_RGB[b + 1] * it / 100 )) \
+            $(( HUE_RGB[b + 2] * it / 100 ))
+    else
+        local lvl=2
+        [ $d -le 5 ] && lvl=1
+        [ $d -le 1 ] && lvl=0
+        printf -v "$1" '\033[38;5;%dm' "${HUE_256[$((b + lvl))]}"
+    fi
+}
+
+name_hue() {   # name_hue <name> -> HUE_OUT : stable colour derived from the name
+    local s="$1" i=0 n=${#1} sum=0 v
+    while [ $i -lt "$n" ]; do
+        printf -v v '%d' "'${s:$i:1}" 2>/dev/null || v=0
+        [ "$v" -lt 0 ] && v=$(( 0 - v ))
+        sum=$(( sum + v * (i + 3) ))
+        i=$((i + 1))
+    done
+    HUE_OUT=$(( sum % NHUES ))
+}
+
+# ---------------------------------------------------------------- base64 ----
+if printf 'x' | base64 2>/dev/null | base64 -d >/dev/null 2>&1; then
+    B64_DEC="-d"
+else
+    B64_DEC="-D"
+fi
+b64enc() { printf '%s' "$1" | base64 | tr -d '\n'; }
+b64dec() { printf '%s' "$1" | base64 $B64_DEC 2>/dev/null; }
+
+# ------------------------------------------------------------ remote TERM ----
+# Terminals like Ghostty, kitty and WezTerm export a TERM that most servers have
+# never heard of, so the remote shell greets you with
+# "'xterm-ghostty': unknown terminal type" and clear/vim/less misbehave.
+# Send a universally understood TERM instead. Override with $SSHM_TERM.
+ssh_term() {
+    if [ -n "${SSHM_TERM:-}" ]; then printf '%s' "$SSHM_TERM"; return 0; fi
+    case "${TERM:-}" in
+        xterm|xterm-color|xterm-16color|xterm-88color|xterm-256color| \
+        screen|screen-256color|tmux|tmux-256color| \
+        vt100|vt102|vt220|linux|ansi|rxvt|rxvt-unicode|rxvt-unicode-256color)
+            printf '%s' "$TERM" ;;
+        *)  printf 'xterm-256color' ;;
+    esac
+}
+SSH_TERM=$(ssh_term)
+
+# ---------------------------------------------------------------- config ----
+
+ensure_config() {
+    if [ ! -d "$CONF_DIR" ]; then
+        mkdir -p "$CONF_DIR" || die "cannot create $CONF_DIR"
+        chmod 700 "$CONF_DIR"
+    fi
+    if [ ! -f "$CONF_FILE" ]; then
+        ( umask 077
+          printf '# sshm servers - name|host|user|port|auth|secret\n' > "$CONF_FILE" )
+        chmod 600 "$CONF_FILE"
+    fi
+    local perm
+    perm=$(ls -l "$CONF_FILE" 2>/dev/null | cut -c1-10)
+    case "$perm" in
+        -rw-------) ;;
+        *) warn "tightening permissions on $CONF_FILE"; chmod 600 "$CONF_FILE" ;;
+    esac
+}
+
+build_index() {
+    HAYS=(); COLORS=()
+    local i=0
+    while [ $i -lt ${#NAMES[@]} ]; do
+        HAYS[$i]=$(printf '%s %s %s' "${NAMES[$i]}" "${USERS[$i]}" "${HOSTS[$i]}" \
+                   | tr '[:upper:]' '[:lower:]')
+        name_hue "${NAMES[$i]}"
+        COLORS[$i]=$HUE_OUT
+        i=$((i + 1))
+    done
+}
+
+load_config() {
+    NAMES=(); HOSTS=(); USERS=(); PORTS=(); AUTHS=(); SECRETS=()
+    [ -f "$CONF_FILE" ] || return 0
+    local n h u p a s ln=0
+    while IFS='|' read -r n h u p a s; do
+        ln=$((ln + 1))
+        case "$n" in ''|'#'*|' '*) continue ;; esac
+        if [ -z "$h" ] || [ -z "$u" ]; then
+            warn "skipping malformed line $ln in servers.conf"
+            continue
+        fi
+        [ -n "$p" ] || p=22
+        [ -n "$a" ] || a=pass
+        local i=${#NAMES[@]}
+        NAMES[$i]="$n"; HOSTS[$i]="$h"; USERS[$i]="$u"
+        PORTS[$i]="$p"; AUTHS[$i]="$a";  SECRETS[$i]="$s"
+    done < "$CONF_FILE"
+    build_index
+    return 0
+}
+
+save_config() {
+    local tmp="$CONF_DIR/.servers.$$.tmp"
+    ( umask 077
+      printf '# sshm servers - name|host|user|port|auth|secret\n'
+      local i=0
+      while [ $i -lt ${#NAMES[@]} ]; do
+          printf '%s|%s|%s|%s|%s|%s\n' \
+              "${NAMES[$i]}" "${HOSTS[$i]}" "${USERS[$i]}" \
+              "${PORTS[$i]}" "${AUTHS[$i]}" "${SECRETS[$i]}"
+          i=$((i + 1))
+      done
+    ) > "$tmp" || die "cannot write $tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CONF_FILE" || die "cannot update $CONF_FILE"
+    build_index
+}
+
+find_index() {
+    local i=0
+    while [ $i -lt ${#NAMES[@]} ]; do
+        if [ "${NAMES[$i]}" = "$1" ]; then printf '%s' "$i"; return 0; fi
+        i=$((i + 1))
+    done
+    printf '%s' "-1"
+}
+
+delete_index() {
+    local del="$1" i=0
+    local nN=() nH=() nU=() nP=() nA=() nS=()
+    while [ $i -lt ${#NAMES[@]} ]; do
+        if [ $i -ne "$del" ]; then
+            local j=${#nN[@]}
+            nN[$j]="${NAMES[$i]}"; nH[$j]="${HOSTS[$i]}"; nU[$j]="${USERS[$i]}"
+            nP[$j]="${PORTS[$i]}"; nA[$j]="${AUTHS[$i]}";  nS[$j]="${SECRETS[$i]}"
+        fi
+        i=$((i + 1))
+    done
+    NAMES=("${nN[@]}"); HOSTS=("${nH[@]}"); USERS=("${nU[@]}")
+    PORTS=("${nP[@]}"); AUTHS=("${nA[@]}"); SECRETS=("${nS[@]}")
+}
+
+# ---------------------------------------------------------------- filter ----
+
+apply_filter() {
+    FIDX=()
+    local i=0
+    if [ -z "$FILTER" ]; then
+        while [ $i -lt ${#NAMES[@]} ]; do FIDX[$i]=$i; i=$((i + 1)); done
+    else
+        local f
+        f=$(printf '%s' "$FILTER" | tr '[:upper:]' '[:lower:]')
+        while [ $i -lt ${#NAMES[@]} ]; do
+            case "${HAYS[$i]}" in
+                *"$f"*) FIDX[${#FIDX[@]}]=$i ;;
+            esac
+            i=$((i + 1))
+        done
+    fi
+    [ $SEL -ge ${#FIDX[@]} ] && SEL=$(( ${#FIDX[@]} - 1 ))
+    [ $SEL -lt 0 ] && SEL=0
+    return 0
+}
+
+cur() {
+    if [ ${#FIDX[@]} -eq 0 ]; then printf '%s' "-1"; else printf '%s' "${FIDX[$SEL]}"; fi
+}
+
+# -------------------------------------------------------------- terminal ----
+
+enter_ui() {
+    [ "$ALT" = 1 ] && return 0
+    tput smcup 2>/dev/null || printf '\033[?1049h'
+    printf '\033[2J\033[H\033[?25l'
+    ALT=1
+}
+
+leave_ui() {
+    [ "$ALT" = 0 ] && return 0
+    printf '\033[?25h'
+    tput rmcup 2>/dev/null || printf '\033[?1049l'
+    ALT=0
+}
+
+cleanup() {
+    clip_stop
+    [ -t 1 ] || return 0
+    tint_off
+    mouse_off
+    printf '\033[?25h'
+    [ "$ALT" = 1 ] && { tput rmcup 2>/dev/null || printf '\033[?1049l'; ALT=0; }
+    [ -n "$STTY_SAVE" ] && stty "$STTY_SAVE" 2>/dev/null
+    return 0
+}
+
+# Real terminal size. Ask the kernel first (stty size is an ioctl, so it is
+# immune to a missing terminfo entry and to stale COLUMNS/LINES in the
+# environment - tput honours those env vars and will happily report 80x24 in a
+# full-screen window). Fall back to tput, then to the environment, then 80x24.
+TROWS=24; TCOLS=80
+term_size() {
+    local sz r="" c=""
+    sz=$(stty size 2>/dev/null)
+    [ -z "$sz" ] && [ -r /dev/tty ] && sz=$(stty size 2>/dev/null </dev/tty)
+    if [ -n "$sz" ]; then
+        r="${sz%% *}"; c="${sz##* }"
+    fi
+    case "$r" in ''|*[!0-9]*) r="" ;; esac
+    case "$c" in ''|*[!0-9]*) c="" ;; esac
+    [ -n "$r" ] && [ "$r" -lt 4 ] && r=""
+    [ -n "$c" ] && [ "$c" -lt 20 ] && c=""
+
+    [ -z "$r" ] && r=$(tput lines 2>/dev/null)
+    [ -z "$c" ] && c=$(tput cols 2>/dev/null)
+    case "$r" in ''|*[!0-9]*) r="${LINES:-}" ;; esac
+    case "$c" in ''|*[!0-9]*) c="${COLUMNS:-}" ;; esac
+    case "$r" in ''|*[!0-9]*) r=24 ;; esac
+    case "$c" in ''|*[!0-9]*) c=80 ;; esac
+
+    TROWS=$r; TCOLS=$c
+}
+
+fitv() {   # fitv <var> <text> <width> : truncate with an ellipsis, or pad
+    local t="$2" w="$3"
+    if [ ${#t} -gt "$w" ]; then
+        printf -v "$1" '%s…' "${t:0:$((w - 1))}"
+    else
+        printf -v "$1" '%s%s' "$t" "${SPACES:0:$((w - ${#t}))}"
+    fi
+}
+
+ct() {     # ct <visible width used> <line> : append a padded content line
+    if [ "$1" -lt "$IW" ]; then
+        CONTENT[${#CONTENT[@]}]="$2${SPACES:0:$((IW - $1))}"
+    else
+        CONTENT[${#CONTENT[@]}]="$2"
+    fi
+}
+ctb() { CONTENT[${#CONTENT[@]}]="${SPACES:0:$IW}"; }
+
+KTXT=""; KUSED=0
+kcap() {   # kcap <key> <label>
+    KTXT="$KTXT$ACC$1$R $MUTE$2$R   "
+    KUSED=$(( KUSED + ${#1} + 1 + ${#2} + 3 ))
+}
+
+# ---------------------------------------------------------------- render ----
+
+LOGO=('███████╗███████╗██╗  ██╗███╗   ███╗' \
+      '██╔════╝██╔════╝██║  ██║████╗ ████║' \
+      '███████╗███████╗███████║██╔████╔██║' \
+      '╚════██║╚════██║██╔══██║██║╚██╔╝██║' \
+      '███████║███████║██║  ██║██║ ╚═╝ ██║' \
+      '╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝')
+LOGOW=35
+
+draw() {
+    local cols rows CH total i
+    term_size; cols=$TCOLS; rows=$TROWS
+    [ "$cols" -lt 44 ] && cols=44
+    [ "$rows" -lt 14 ] && rows=14
+    TOTALW=$((cols - 1))
+    IW=$((TOTALW - 4))
+    CH=$((rows - 2))
+    CONTENT=()
+    total=${#FIDX[@]}
+
+    # the aura takes its hue from the highlighted server
+    local o=-1
+    [ "$total" -gt 0 ] && o="${FIDX[$SEL]}"
+    if [ "$o" -ge 0 ]; then HUEI="${COLORS[$o]}"; else HUEI=0; fi
+
+    local big=0 fixed=10
+    if [ "$CH" -ge 24 ] && [ "$IW" -ge $((LOGOW + 6)) ]; then big=1; fixed=16; fi
+    local listh=$(( CH - fixed ))
+    if [ $listh -lt 3 ] && [ $big -eq 1 ]; then big=0; fixed=10; listh=$(( CH - fixed )); fi
+    [ $listh -lt 1 ] && listh=1
+
+    # ---- header ----------------------------------------------------------
+    ctb
+    local rc
+    if [ $big -eq 1 ]; then
+        i=0
+        while [ $i -lt 6 ]; do
+            rampv rc $i
+            # the shushing face is 2 columns wide, so both prefixes measure 6
+            if [ $i -eq 2 ]; then
+                ct $((6 + LOGOW)) "  🤫  $rc${LOGO[$i]}$R"
+            else
+                ct $((6 + LOGOW)) "      $rc${LOGO[$i]}$R"
+            fi
+            i=$((i + 1))
+        done
+        ctb
+    else
+        local rc2; rampv rc2 3
+        ct $(( 13 + ${#VERSION} )) "  🤫 $rc2${B}sshm$R  $FAINT v$VERSION$R"
+    fi
+
+    local count="${#NAMES[@]} server"
+    [ "${#NAMES[@]}" = "1" ] || count="${count}s"
+    if [ "$o" -ge 0 ]; then count="$count  ·  ${HUE_NAME[$HUEI]}"; fi
+    local rlab="ssh connection manager" lw=$(( IW - 22 ))
+    if [ $lw -lt 14 ]; then
+        ct $(( 2 + ${#count} )) "  $MUTE$count$R"
+    else
+        local lf; fitv lf "  $count" $lw
+        ct $IW "$MUTE$lf$R$FAINT$rlab$R"
+    fi
+    ctb
+
+    # ---- filter bar ------------------------------------------------------
+    local fmax=$(( IW - 26 )); [ $fmax -lt 6 ] && fmax=6
+    local fshow="$FILTER"
+    [ ${#fshow} -gt $fmax ] && fshow="${fshow:0:$fmax}"
+    if [ $FILTERING -eq 1 ]; then
+        local mt="   $total match"
+        ct $(( 12 + ${#fshow} + ${#mt} )) \
+           "  $ACC2${B}filter$R ${FAINT}›$R $TXT$fshow$R${ACC}▏$R$FAINT$mt$R"
+    elif [ -n "$FILTER" ]; then
+        local mt="   $total match · esc clears"
+        ct $(( 11 + ${#fshow} + ${#mt} )) \
+           "  ${ACC2}filter$R ${FAINT}›$R $TXT$fshow$R$FAINT$mt$R"
+    else
+        ct 19 "  ${FAINT}press / to filter$R"
+    fi
+
+    # ---- column headings -------------------------------------------------
+    local namew=8
+    i=0
+    while [ $i -lt "${#NAMES[@]}" ]; do
+        [ ${#NAMES[$i]} -gt $namew ] && namew=${#NAMES[$i]}
+        i=$((i + 1))
+    done
+    [ $namew -gt 22 ] && namew=22
+    local tw=$(( IW - namew - 10 ))
+    if [ $tw -lt 12 ]; then tw=12; namew=$(( IW - tw - 10 )); fi
+    [ $namew -lt 6 ] && namew=6
+
+    local h1 h2
+    fitv h1 "SERVER" $namew
+    fitv h2 "CONNECTION" $tw
+    ct $IW "  $FAINT$h1  $h2  AUTH$R"
+    ct $IW "  $RULE${DASHES:0:$((IW - 4))}$R  "
+
+    # ---- list ------------------------------------------------------------
+    GLOW_ROW=$(( ${#CONTENT[@]} + 2 ))
+    if [ "${#NAMES[@]}" -eq 0 ]; then
+        ctb
+        ct 26 "     ${MUTE}No servers saved yet.$R"
+        ctb
+        ct 35 "     ${TXT}Press$R $ACC${B}a$R ${TXT}to add your first one.$R"
+        i=4
+        while [ $i -lt $listh ]; do ctb; i=$((i + 1)); done
+    elif [ "$total" -eq 0 ]; then
+        ctb
+        ct $(( 21 + ${#FILTER} )) "     ${WARN}Nothing matches $B$FILTER$R"
+        ctb
+        ct 38 "     ${MUTE}Backspace to widen, esc to clear.$R"
+        i=4
+        while [ $i -lt $listh ]; do ctb; i=$((i + 1)); done
+    else
+        [ $SEL -lt $OFF ] && OFF=$SEL
+        [ $SEL -ge $((OFF + listh)) ] && OFF=$((SEL - listh + 1))
+        [ $((OFF + listh)) -gt "$total" ] && OFF=$((total - listh))
+        [ $OFF -lt 0 ] && OFF=0
+
+        local shown=0 p=$OFF oo target badge nf tf dc bs bc2
+        while [ $shown -lt $listh ]; do
+            if [ $p -ge "$total" ]; then ctb; shown=$((shown + 1)); p=$((p + 1)); continue; fi
+            oo="${FIDX[$p]}"
+            target="${USERS[$oo]}@${HOSTS[$oo]}"
+            [ "${PORTS[$oo]}" = "22" ] || target="$target:${PORTS[$oo]}"
+            if [ "${AUTHS[$oo]}" = "key" ]; then badge="KEY "; else badge="PASS"; fi
+            fitv nf "${NAMES[$oo]}" $namew
+            fitv tf "$target" $tw
+            if [ $p -eq $SEL ]; then
+                GLOW_ROW=$(( ${#CONTENT[@]} + 1 ))
+                barv bs "${COLORS[$oo]}"
+                ct $IW "${bs}❯ $nf  $tf  $badge$R"
+            else
+                huev dc "${COLORS[$oo]}"
+                bc2="$WARN"; [ "${AUTHS[$oo]}" = "key" ] && bc2="$OK"
+                ct $IW "${dc}●$R $TXT$nf$R  $MUTE$tf$R  $bc2$badge$R"
+            fi
+            shown=$((shown + 1)); p=$((p + 1))
+        done
+    fi
+
+    # ---- detail + footer -------------------------------------------------
+    ct $IW "  $RULE${DASHES:0:$((IW - 4))}$R  "
+
+    if [ "$o" -ge 0 ]; then
+        local prev="ssh"
+        [ "${PORTS[$o]}" = "22" ] || prev="$prev -p ${PORTS[$o]}"
+        [ "${AUTHS[$o]}" = "key" ] && prev="$prev -i ${SECRETS[$o]}"
+        prev="$prev ${USERS[$o]}@${HOSTS[$o]}"
+        local pf; fitv pf "$prev" $(( IW - 2 ))
+        ct $IW "  $FAINT$pf$R"
+    else
+        ctb
+    fi
+
+    if [ -n "$FLASH" ]; then
+        ct $IW "  $FLASH$R"
+        FLASH=""
+    else
+        KTXT="  "; KUSED=2
+        if [ $FILTERING -eq 1 ]; then
+            kcap "↑↓" "move"; kcap "⏎" "connect"; kcap "esc" "clear"
+        else
+            kcap "↑↓" "move"; kcap "⏎" "connect"; kcap "/" "filter"; kcap "a" "add"
+            if [ $IW -ge 82 ]; then
+                kcap "e" "edit"; kcap "d" "delete"; kcap "c" "send key"
+            elif [ $IW -ge 69 ]; then
+                kcap "e" "edit"; kcap "d" "delete"
+            fi
+            kcap "q" "quit"
+        fi
+        KTXT="${KTXT%   }"; KUSED=$(( KUSED - 3 ))
+        ct $KUSED "$KTXT"
+    fi
+
+    # ---- compose the framed screen with the aura border ------------------
+    SCREEN=()
+    local ab
+    aurav ab 0
+    SCREEN[0]="${ab}╭${DASHES:0:$((TOTALW - 2))}╮$R"
+    i=0
+    while [ $i -lt $CH ]; do
+        aurav ab $((i + 1))
+        SCREEN[$((i + 1))]="${ab}│$R ${CONTENT[$i]} ${ab}│$R"
+        i=$((i + 1))
+    done
+    aurav ab $((rows - 1))
+    SCREEN[$((rows - 1))]="${ab}╰${DASHES:0:$((TOTALW - 2))}╯$R"
+
+    local buf="" n=0
+    while [ $n -lt "$rows" ]; do
+        buf="$buf"$'\033[K'"${SCREEN[$n]}"
+        [ $((n + 1)) -lt "$rows" ] && buf="$buf"$'\n'
+        n=$((n + 1))
+    done
+    printf '\033[H%s' "$buf"
+}
+
+# ----------------------------------------------------------------- input ----
+
+KEY=""
+read_key() {
+    KEY=""
+    local k rest st
+    IFS= read -rsn1 k; st=$?
+    [ $st -ne 0 ] && return $st
+
+    if [ "$k" = "$ESC" ]; then
+        rest=""
+        if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+            IFS= read -rsn2 -t 0.05 rest 2>/dev/null
+        else
+            IFS= read -rsn2 rest
+        fi
+        case "$rest" in
+            '[A') KEY=UP ;;
+            '[B') KEY=DOWN ;;
+            '[C') KEY=RIGHT ;;
+            '[D') KEY=LEFT ;;
+            '[5') IFS= read -rsn1 _d; KEY=PGUP ;;
+            '[6') IFS= read -rsn1 _d; KEY=PGDN ;;
+            '[H'|'OH') KEY=HOME ;;
+            '[F'|'OF') KEY=END ;;
+            '') KEY=ESC ;;
+            *) KEY=OTHER ;;
+        esac
+    elif [ -z "$k" ]; then
+        KEY=ENTER
+    elif [ "$k" = $'\177' ] || [ "$k" = $'\010' ]; then
+        KEY=BSPACE
+    else
+        KEY="$k"
+    fi
+    return 0
+}
+
+pause_key() {
+    printf '\n%s%s%s' "$FAINT" "${1:-[ press any key ]}" "$R"
+    IFS= read -rsn1 _x
+    printf '\n'
+}
+
+sleep_short() {
+    if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+        IFS= read -rsn1 -t 0.4 _x 2>/dev/null
+    else
+        IFS= read -rsn1 -t 1 _x 2>/dev/null
+    fi
+    return 0
+}
+
+# ----------------------------------------------------------------- forms ----
+
+panel() {   # panel <TITLE> <subtitle> [hue]
+    local cols w hc rc
+    term_size; cols=$TCOLS; w=$((cols - 3)); [ $w -lt 30 ] && w=30
+    [ $w -gt 100 ] && w=100
+    if [ -n "$3" ]; then huev hc "$3"; else rampv hc 0; fi
+    rampv rc 3
+    printf '\033[H\033[2J\033[?25h'
+    printf '\n  🤫 %s%s%s\n' "$rc$B" "$1" "$R"
+    printf '  %s%s%s\n' "$MUTE" "$2" "$R"
+    printf '  %s%s%s\n\n' "$hc" "${DASHES:0:$w}" "$R"
+}
+
+ask() {
+    local label="$1" def="$2" ans lf
+    fitv lf "$label" 12
+    if [ -n "$def" ]; then
+        printf '  %s%s%s %s›%s %s[%s]%s ' "$TXT" "$lf" "$R" "$ACC" "$R" "$FAINT" "$def" "$R" >&2
+    else
+        printf '  %s%s%s %s›%s ' "$TXT" "$lf" "$R" "$ACC" "$R" >&2
+    fi
+    IFS= read -r ans
+    [ -n "$ans" ] || ans="$def"
+    printf '%s' "$ans"
+}
+
+ask_secret() {
+    local label="$1" ans lf
+    fitv lf "$label" 12
+    printf '  %s%s%s %s›%s ' "$TXT" "$lf" "$R" "$ACC" "$R" >&2
+    IFS= read -rs ans
+    printf '\n' >&2
+    printf '%s' "$ans"
+}
+
+confirm() {
+    local q="$1" ans
+    printf '  %s%s%s %s[y/N]%s ' "$TXT" "$q" "$R" "$FAINT" "$R" >&2
+    IFS= read -r ans
+    case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+field_err() { printf '  %s✗ %s%s\n' "$BAD" "$1" "$R"; }
+
+expand_tilde() {
+    case "$1" in
+        "~") printf '%s' "$HOME" ;;
+        "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+valid_port() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+server_form() {
+    local idx="$1"
+    local dname="" dhost="" duser="${USER:-root}" dport="22" dauth="pass" dsecret=""
+    local editing=0
+
+    if [ "$idx" -ge 0 ]; then
+        editing=1
+        dname="${NAMES[$idx]}"; dhost="${HOSTS[$idx]}"; duser="${USERS[$idx]}"
+        dport="${PORTS[$idx]}"; dauth="${AUTHS[$idx]}"; dsecret="${SECRETS[$idx]}"
+        panel "EDIT SERVER" "blank keeps the current value" "${COLORS[$idx]}"
+    else
+        panel "ADD SERVER" "press enter to accept a [default]"
+    fi
+
+    local name found
+    while :; do
+        name=$(ask "Name" "$dname")
+        if [ -z "$name" ]; then field_err "Name cannot be empty."; continue; fi
+        case "$name" in
+            *"|"*) field_err 'Name cannot contain "|".'; continue ;;
+            *" "*) field_err "Name cannot contain spaces."; continue ;;
+        esac
+        found=$(find_index "$name")
+        if [ "$found" != "-1" ] && [ "$found" != "$idx" ]; then
+            field_err "A server named \"$name\" already exists."; continue
+        fi
+        break
+    done
+
+    local host
+    while :; do
+        host=$(ask "IP / Host" "$dhost")
+        if [ -z "$host" ]; then field_err "Host cannot be empty."; continue; fi
+        case "$host" in *"|"*) field_err 'Host cannot contain "|".'; continue ;; esac
+        break
+    done
+
+    local user
+    while :; do
+        user=$(ask "Username" "$duser")
+        [ -n "$user" ] && break
+        field_err "Username cannot be empty."
+    done
+
+    local port
+    while :; do
+        port=$(ask "Port" "$dport")
+        valid_port "$port" && break
+        field_err "Port must be a number between 1 and 65535."
+    done
+
+    local achoice auth secret
+    local adef="p"; [ "$dauth" = "key" ] && adef="k"
+    while :; do
+        achoice=$(ask "Auth p/k" "$adef")
+        case "$achoice" in
+            p|P|pass|password) auth="pass"; break ;;
+            k|K|key)           auth="key";  break ;;
+            *) field_err "Enter p (password) or k (ssh key)." ;;
+        esac
+    done
+
+    if [ "$auth" = "pass" ]; then
+        local p1 p2
+        while :; do
+            p1=$(ask_secret "Password")
+            if [ -z "$p1" ]; then
+                if [ $editing -eq 1 ] && [ "$dauth" = "pass" ] && [ -n "$dsecret" ]; then
+                    secret="$dsecret"; break
+                fi
+                field_err "Password cannot be empty."; continue
+            fi
+            p2=$(ask_secret "Confirm")
+            if [ "$p1" != "$p2" ]; then field_err "Passwords do not match."; continue; fi
+            secret=$(b64enc "$p1"); break
+        done
+        if ! command -v sshpass >/dev/null 2>&1; then
+            printf '  %s! sshpass is not installed, so ssh will still prompt.%s\n' "$WARN" "$R"
+            printf '  %s  install it with: brew install sshpass%s\n' "$FAINT" "$R"
+        fi
+    else
+        local kdef="$dsecret"
+        if [ "$dauth" != "key" ] || [ -z "$kdef" ]; then
+            if [ -f "$HOME/.ssh/id_ed25519" ]; then kdef="$HOME/.ssh/id_ed25519"
+            elif [ -f "$HOME/.ssh/id_rsa" ];  then kdef="$HOME/.ssh/id_rsa"
+            else kdef=""; fi
+        fi
+        while :; do
+            secret=$(ask "Key file" "$kdef")
+            secret=$(expand_tilde "$secret")
+            [ -n "$secret" ] || { field_err "Key path cannot be empty."; continue; }
+            if [ ! -f "$secret" ]; then
+                printf '  %s! no such file: %s%s\n' "$WARN" "$secret" "$R"
+                confirm "Save it anyway?" && break
+                continue
+            fi
+            break
+        done
+    fi
+
+    local t
+    if [ "$idx" -ge 0 ]; then t="$idx"; else t=${#NAMES[@]}; fi
+    NAMES[$t]="$name"; HOSTS[$t]="$host"; USERS[$t]="$user"
+    PORTS[$t]="$port"; AUTHS[$t]="$auth";  SECRETS[$t]="$secret"
+    save_config
+    FILTER=""; apply_filter
+
+    local p=0
+    while [ $p -lt ${#FIDX[@]} ]; do
+        [ "${FIDX[$p]}" = "$t" ] && SEL=$p
+        p=$((p + 1))
+    done
+
+    local hc; huev hc "${COLORS[$t]}"
+    printf '\n  %s●%s %s✓ saved %s%s%s\n' "$hc" "$R" "$OK" "$B" "$name" "$R"
+    FLASH="${hc}●$R ${OK}✓ saved $B$name$R"
+    printf '\033[?25l'
+    sleep_short
+}
+
+delete_server() {
+    local idx="$1"
+    panel "DELETE SERVER" "this cannot be undone" "${COLORS[$idx]}"
+    printf '  %s%s%s   %s%s@%s:%s%s\n\n' \
+        "$B$TXT" "${NAMES[$idx]}" "$R" "$MUTE" \
+        "${USERS[$idx]}" "${HOSTS[$idx]}" "${PORTS[$idx]}" "$R"
+    if confirm "Delete this server?"; then
+        local gone="${NAMES[$idx]}"
+        delete_index "$idx"
+        save_config
+        apply_filter
+        printf '\n  %s✓ deleted %s%s\n' "$OK" "$gone" "$R"
+        FLASH="${OK}✓ deleted $gone$R"
+    else
+        printf '\n  %scancelled%s\n' "$FAINT" "$R"
+        FLASH="${FAINT}cancelled$R"
+    fi
+    printf '\033[?25l'
+    sleep_short
+}
+
+# --------------------------------------------------------------- connect ----
+
+# A running ssh session owns the whole screen, so sshm cannot draw its frame
+# there. Instead it tints the terminal itself for the length of the session:
+# the window title, the cursor colour, and a faint wash of the server's hue in
+# the background - the aura, carried inside. Everything is restored on exit.
+# Set SSHM_TINT=0 to turn it off.
+TINTED=0
+tint_on() {   # tint_on <hue> <name> <target>
+    [ "${SSHM_TINT:-1}" = "0" ] && return 0
+    [ $UI_COLOR -eq 0 ] && return 0
+    local b=$(( $1 * 3 )) r g bl
+    r="${HUE_RGB[$b]}"; g="${HUE_RGB[$((b + 1))]}"; bl="${HUE_RGB[$((b + 2))]}"
+    printf '\033]11;#%02x%02x%02x\007' \
+        $(( 17 + r * 13 / 100 )) $(( 17 + g * 13 / 100 )) $(( 22 + bl * 13 / 100 ))
+    printf '\033]12;#%02x%02x%02x\007' "$r" "$g" "$bl"
+    printf '\033]0;\360\237\244\253 %s · %s\007' "$2" "$3"
+    TINTED=1
+}
+
+tint_off() {
+    [ $TINTED -eq 0 ] && return 0
+    printf '\033]111\007\033]112\007\033]0;\007'
+    TINTED=0
+}
+
+# A remote full-screen app - Claude Code, vim, htop, tmux - switches the
+# terminal's mouse reporting on. If it dies, is killed, or the connection drops
+# before it can switch it off again, the mode stays on locally and every mouse
+# movement is echoed as a raw SGR report: [<35;108;41M and friends. Turn all of
+# them off ourselves, before and after each session, so the noise cannot
+# outlive the session that caused it.
+mouse_off() {
+    [ -t 1 ] || return 0
+    printf '\033[?1000l\033[?1001l\033[?1002l\033[?1003l'
+    printf '\033[?1004l\033[?1005l\033[?1006l\033[?1015l\033[?1016l'
+    return 0
+}
+
+# ------------------------------------------------------------- clipboard ----
+# An image on the local clipboard cannot survive a paste into a remote shell -
+# the terminal only ever sends text down the wire, so a screenshot arrives as
+# nothing at all. sshm bridges it: while a session is open it watches the macOS
+# clipboard, and the moment an image lands there it copies the bytes to the
+# server over the session's own multiplexed connection and puts the *remote
+# path* on the clipboard instead. Cmd+V then pastes a path the agent on the
+# other side can actually open. Set SSHM_CLIP=0 to turn it off.
+
+CLIP_SOCK=""      # ControlMaster socket for the running session
+CLIP_PID=""       # background watcher
+
+clip_available() {
+    [ "${SSHM_CLIP:-1}" = "0" ] && return 1
+    command -v pbcopy >/dev/null 2>&1 && command -v osascript >/dev/null 2>&1
+}
+
+# NSPasteboard's changeCount is an integer that ticks once per copy, so asking
+# for it costs nothing. (AppleScript's `clipboard info` looks tempting, but it
+# renders every flavour on the pasteboard to measure it - with a screenshot on
+# the clipboard that is about four seconds of CPU per call, which is no way to
+# run a loop once a second.)
+JXA_PB='ObjC.import("AppKit"); var pb = $.NSPasteboard.generalPasteboard;'
+
+clip_change() {
+    osascript -l JavaScript -e "$JXA_PB pb.changeCount" 2>/dev/null
+}
+
+# One long-lived process that prints the change counter once per tick, rather
+# than one osascript launch per tick - the launch is what costs, not the query.
+clip_monitor() {
+    osascript -l JavaScript -e "$JXA_PB \
+        var p = ${SSHM_CLIP_POLL:-1}; \
+        while (true) { console.log(pb.changeCount); \
+                       \$.NSThread.sleepForTimeInterval(p); }" 2>&1
+}
+
+# The UTIs on the pasteboard - also cheap, because it never touches the bytes.
+clip_types() {
+    osascript -l JavaScript -e "$JXA_PB ObjC.deepUnwrap(pb.types).join(',')" 2>/dev/null
+}
+
+# Only raw image data counts for the watcher. public.file-url is deliberately
+# NOT here: every file you copy in Finder puts one on the pasteboard, and
+# treating that as "an image to upload" meant copying a PNG to paste somewhere
+# else locally silently replaced your clipboard with a server path.
+# `sshm paste` still accepts file URLs, because you asked for it explicitly.
+clip_is_image() {
+    case "$1" in
+        *public.png*|*public.tiff*|*public.jpeg*|*public.heic*)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Write whatever image is on the clipboard to $1 as a PNG. Handles both raw
+# image data (a screenshot taken with ctrl-cmd-shift-4) and a file copied in
+# Finder, which arrives as a file URL rather than pixels.
+clip_to_png() {
+    local out="$1" src=""
+    rm -f "$out" 2>/dev/null
+
+    case "$(clip_types)" in *public.file-url*)
+        src=$(osascript -e 'POSIX path of (the clipboard as «class furl»)' 2>/dev/null) ;;
+    esac
+    if [ -n "$src" ] && [ -f "$src" ]; then
+        case "$src" in
+            *.png|*.PNG|*.jpg|*.JPG|*.jpeg|*.JPEG|*.gif|*.GIF|*.webp|*.WEBP)
+                cp "$src" "$out" 2>/dev/null && [ -s "$out" ] && return 0 ;;
+        esac
+    fi
+
+    if command -v pngpaste >/dev/null 2>&1; then
+        pngpaste "$out" >/dev/null 2>&1
+        [ -s "$out" ] && return 0
+    fi
+
+    clip_write_png "$out"
+}
+
+clip_write_png() {
+    local out="$1"
+    osascript >/dev/null 2>&1 <<OSA
+try
+    set img to (the clipboard as «class PNGf»)
+    set fh to open for access POSIX file "$out" with write permission
+    set eof fh to 0
+    write img to fh
+    close access fh
+end try
+OSA
+    [ -s "$out" ]
+}
+
+# Push $1 to the server over the existing session and echo the remote path.
+clip_push() {
+    local file="$1" sock="$2" target="$3" name
+    name="clip-$(date +%Y%m%d-%H%M%S)-$$.png"
+    ssh -S "$sock" -o BatchMode=yes "$target" \
+        "d=\${XDG_CACHE_HOME:-\$HOME/.cache}/sshm-clip; mkdir -p \"\$d\" && \
+         cat > \"\$d/$name\" && printf '%s' \"\$d/$name\"" < "$file" 2>/dev/null
+}
+
+# One shot: clipboard image -> server -> remote path back on the clipboard.
+clip_once() {
+    local sock="$1" target="$2" tmp remote
+    tmp="${TMPDIR:-/tmp}/sshm-clip-$$.png"
+    clip_to_png "$tmp" || return 1
+    remote=$(clip_push "$tmp" "$sock" "$target")
+    rm -f "$tmp"
+    [ -n "$remote" ] || return 1
+    printf '%s' "$remote" | pbcopy
+    printf '%s' "$remote"
+}
+
+clip_watch() {   # clip_watch <sock> <target>
+    local sock="$1" target="$2" fifo mon cur last="" seen=0
+
+    fifo="${TMPDIR:-/tmp}/sshm-clip-$$.fifo"
+    rm -f "$fifo"
+    mkfifo -m 600 "$fifo" 2>/dev/null || return 0
+    clip_monitor > "$fifo" &
+    mon=$!
+    # cleanup kills this watcher; take the monitor down with us rather than
+    # leaving an osascript running until the terminal closes
+    trap 'kill "$mon" 2>/dev/null; exit 0' TERM INT HUP
+    exec 3< "$fifo"
+    rm -f "$fifo"
+
+    while IFS= read -r cur <&3; do
+        case "$cur" in ''|*[!0-9]*) continue ;; esac   # not a counter, ignore
+        if [ -S "$sock" ]; then
+            seen=1
+        elif [ $seen -eq 1 ]; then
+            break                                      # session over
+        else
+            continue                                   # master still connecting
+        fi
+        [ "$cur" = "$last" ] && continue
+        if [ -z "$last" ]; then last="$cur"; continue; fi   # first tick
+        last="$cur"
+        clip_is_image "$(clip_types)" || continue
+        if clip_once "$sock" "$target" >/dev/null; then
+            printf '\a'          # a bell, so nothing is drawn over the session
+            last=$(clip_change)  # our own path-on-the-clipboard, not a new image
+        fi
+    done
+
+    kill "$mon" 2>/dev/null
+    exec 3<&-
+    return 0
+}
+
+clip_start() {   # clip_start <target>
+    clip_available || return 0
+    # The watcher rewrites the system clipboard behind your back, so it is off
+    # unless you ask for it. `sshm paste` covers the same ground on demand and
+    # only when you mean it.
+    [ "${SSHM_CLIP_WATCH:-0}" = "1" ] || return 0
+    [ -n "$CLIP_SOCK" ] || return 0
+    printf '%s' "$1" > "$CLIP_SOCK.target" 2>/dev/null
+    ( clip_watch "$CLIP_SOCK" "$1" ) 2>/dev/null &
+    CLIP_PID=$!
+    return 0
+}
+
+clip_stop() {
+    [ -n "$CLIP_PID" ] && kill "$CLIP_PID" 2>/dev/null
+    CLIP_PID=""
+    [ -n "$CLIP_SOCK" ] && rm -f "$CLIP_SOCK.target" 2>/dev/null
+    return 0
+}
+
+# Any keystrokes still queued from the menu would otherwise be handed straight
+# to the remote shell, which echoes them back as ^[[D and friends.
+flush_input() {
+    [ "${BASH_VERSINFO[0]}" -ge 4 ] || return 0
+    local junk
+    while IFS= read -rsn1 -t 0.002 junk 2>/dev/null; do :; done
+    return 0
+}
+
+open_rule() {   # open_rule <hue> <name> <target>
+    local hc; huev hc "$1"
+    term_size
+    local lw=$(( 4 + ${#2} )) rw=$(( 1 + ${#3} )) fill
+    fill=$(( TCOLS - 1 - lw - rw ))
+    [ $fill -lt 3 ] && fill=3
+    printf '%s🤫 %s %s %s%s\n' "$hc" "$2" "${DASHES:0:$fill}" "$3" "$R"
+}
+
+close_rule() {  # close_rule <hue> <name> <exit status>
+    local hc; huev hc "$1"
+    term_size
+    local tag=" $2 · exit $3" fill
+    fill=$(( TCOLS - 1 - ${#tag} ))
+    [ $fill -lt 3 ] && fill=3
+    printf '%s%s%s%s\n' "$hc" "${DASHES:0:$fill}" "$tag" "$R"
+}
+
+build_ssh_args() {
+    local idx="$1"
+    # Idle sessions die silently behind NAT gateways, home routers and cloud
+    # firewalls, which drop the connection's state after a few minutes without
+    # telling either end. ssh then sits in a blind read forever and the only
+    # way out is ~. or killing the window. ServerAliveInterval makes ssh send
+    # an encrypted keepalive on the channel, which keeps the mapping alive and,
+    # if the peer really is gone, tears the session down instead of hanging.
+    SSH_ARGS=(-p "${PORTS[$idx]}"
+        -o "ServerAliveInterval=${SSHM_ALIVE_INTERVAL:-20}"
+        -o "ServerAliveCountMax=${SSHM_ALIVE_COUNT:-3}"
+        -o "ConnectTimeout=${SSHM_CONNECT_TIMEOUT:-10}"
+        -o TCPKeepAlive=yes)
+
+    # A control socket lets the clipboard bridge open extra channels on this
+    # same authenticated connection - no second password, no second handshake.
+    CLIP_SOCK=""
+    if clip_available; then
+        CLIP_SOCK="/tmp/sshm-$(id -u)-$$.sock"
+        SSH_ARGS[${#SSH_ARGS[@]}]="-o"
+        SSH_ARGS[${#SSH_ARGS[@]}]="ControlMaster=auto"
+        SSH_ARGS[${#SSH_ARGS[@]}]="-o"
+        SSH_ARGS[${#SSH_ARGS[@]}]="ControlPath=$CLIP_SOCK"
+        SSH_ARGS[${#SSH_ARGS[@]}]="-o"
+        SSH_ARGS[${#SSH_ARGS[@]}]="ControlPersist=no"
+    fi
+    if [ "${AUTHS[$idx]}" = "key" ]; then
+        SSH_ARGS[${#SSH_ARGS[@]}]="-i"
+        SSH_ARGS[${#SSH_ARGS[@]}]="${SECRETS[$idx]}"
+        SSH_ARGS[${#SSH_ARGS[@]}]="-o"
+        SSH_ARGS[${#SSH_ARGS[@]}]="IdentitiesOnly=yes"
+    else
+        SSH_ARGS[${#SSH_ARGS[@]}]="-o"
+        SSH_ARGS[${#SSH_ARGS[@]}]="PubkeyAuthentication=no"
+        SSH_ARGS[${#SSH_ARGS[@]}]="-o"
+        SSH_ARGS[${#SSH_ARGS[@]}]="PreferredAuthentications=password,keyboard-interactive"
+    fi
+    SSH_ARGS[${#SSH_ARGS[@]}]="${USERS[$idx]}@${HOSTS[$idx]}"
+}
+
+run_ssh() {
+    local idx="$1" rc=0
+    build_ssh_args "$idx"
+    mouse_off
+    clip_start "${USERS[$idx]}@${HOSTS[$idx]}"
+
+    if [ "${AUTHS[$idx]}" = "key" ]; then
+        TERM="$SSH_TERM" ssh "${SSH_ARGS[@]}"
+        rc=$?
+    else
+        local pass
+        pass=$(b64dec "${SECRETS[$idx]}")
+        if command -v sshpass >/dev/null 2>&1; then
+            # fd 3 keeps the password out of argv (ps) and off disk
+            TERM="$SSH_TERM" sshpass -d 3 ssh "${SSH_ARGS[@]}" 3< <(printf '%s\n' "$pass")
+            rc=$?
+        else
+            warn "sshpass not found - ssh will prompt for the password"
+            TERM="$SSH_TERM" ssh "${SSH_ARGS[@]}"
+            rc=$?
+        fi
+    fi
+    clip_stop
+    mouse_off
+    return $rc
+}
+
+# sshpass cannot answer ssh's "are you sure you want to continue connecting?"
+# prompt, so it bails with status 6 on a host it has never seen. Rather than
+# disabling host key checking, show the fingerprint and let the user decide.
+trust_host() {
+    local idx="$1"
+    local host="${HOSTS[$idx]}" port="${PORTS[$idx]}"
+    local kh="$HOME/.ssh/known_hosts"
+
+    printf '\n%sThe host key for %s:%s is not yet known.%s\n' "$WARN" "$host" "$port" "$R"
+    printf '%ssshpass cannot answer the first-connect prompt, so the session was refused.%s\n\n' \
+        "$FAINT" "$R"
+
+    if ! command -v ssh-keyscan >/dev/null 2>&1; then
+        printf '  Connect once by hand to record the key:\n'
+        printf '  %sssh -p %s %s@%s%s\n' "$B" "$port" "${USERS[$idx]}" "$host" "$R"
+        return 1
+    fi
+
+    local scan
+    scan=$(ssh-keyscan -T 8 -p "$port" "$host" 2>/dev/null)
+    if [ -z "$scan" ]; then
+        printf '  %sCould not reach %s:%s to fetch its host key.%s\n' "$BAD" "$host" "$port" "$R"
+        return 1
+    fi
+
+    printf '  Fingerprints offered by the server:\n\n'
+    printf '%s' "$scan" | ssh-keygen -lf - 2>/dev/null | sed 's/^/    /'
+    printf '\n  %sVerify these against the server console or your provider'"'"'s panel.%s\n' \
+        "$FAINT" "$R"
+    printf '  %sAccepting a key you have not checked is trust-on-first-use.%s\n\n' "$FAINT" "$R"
+
+    if ! confirm "Trust this host and save the key?"; then
+        printf '\n  %sNot saved.%s\n' "$FAINT" "$R"
+        return 1
+    fi
+
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    ssh-keyscan -T 8 -H -p "$port" "$host" >> "$kh" 2>/dev/null
+    chmod 600 "$kh" 2>/dev/null
+    printf '\n  %s✓ Added to %s%s\n' "$OK" "$kh" "$R"
+    return 0
+}
+
+# Manual counterpart to the watcher, for a second terminal tab: take whatever
+# image is on the clipboard, put it on the server, print the remote path.
+cmd_paste() {
+    clip_available || die "clipboard bridge needs macOS (pbcopy + osascript)"
+    local sock target remote
+    sock=$(ls -t /tmp/sshm-*.sock.target 2>/dev/null | head -1)
+    [ -n "$sock" ] || die "no sshm session is open"
+    target=$(cat "$sock" 2>/dev/null)
+    sock="${sock%.target}"
+    [ -S "$sock" ] || die "no sshm session is open"
+    remote=$(clip_once "$sock" "$target") || die "no image on the clipboard"
+    printf '  %s✓ %s%s  %s(also copied - just paste it)%s\n' \
+        "$OK" "$remote" "$R" "$FAINT" "$R"
+    return 0
+}
+
+connect() {
+    local idx="$1" interactive="${2:-1}" rc=0
+    leave_ui
+    [ "$interactive" = "1" ] && flush_input
+
+    local hue="${COLORS[$idx]}"
+    local target="${USERS[$idx]}@${HOSTS[$idx]}:${PORTS[$idx]}"
+    tint_on "$hue" "${NAMES[$idx]}" "$target"
+    open_rule "$hue" "${NAMES[$idx]}" "$target"
+
+    run_ssh "$idx"
+    rc=$?
+
+    if [ $rc -eq 6 ] && [ "${AUTHS[$idx]}" = "pass" ]; then
+        if trust_host "$idx"; then
+            printf '\n%s→ retrying...%s\n' "$ACC2" "$R"
+            run_ssh "$idx"
+            rc=$?
+        fi
+    fi
+
+    close_rule "$hue" "${NAMES[$idx]}" "$rc"
+    tint_off
+
+    if [ "$interactive" = "1" ]; then
+        if [ $rc -ne 0 ]; then
+            printf '\n%sSession exited with status %d%s' "$WARN" "$rc" "$R"
+            case $rc in
+                5) printf '%s  (sshpass: wrong password - press e to fix it)%s' "$FAINT" "$R" ;;
+                6) printf '%s  (sshpass: host key not accepted)%s' "$FAINT" "$R" ;;
+                255) printf '%s  (ssh: connection or authentication failure)%s' "$FAINT" "$R" ;;
+            esac
+            printf '\n'
+        fi
+        pause_key "[ press any key to return to sshm ]"
+        enter_ui
+    fi
+    return $rc
+}
+
+copy_key() {
+    local idx="$1"
+    panel "SEND PUBLIC KEY" "install your key on ${NAMES[$idx]} so you can drop the password"
+
+    if ! command -v ssh-copy-id >/dev/null 2>&1; then
+        field_err "ssh-copy-id is not installed."
+        printf '\033[?25l'; pause_key; return 1
+    fi
+
+    local kdef=""
+    if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then kdef="$HOME/.ssh/id_ed25519.pub"
+    elif [ -f "$HOME/.ssh/id_rsa.pub" ];    then kdef="$HOME/.ssh/id_rsa.pub"
+    fi
+
+    local pub
+    pub=$(ask "Public key" "$kdef")
+    pub=$(expand_tilde "$pub")
+    if [ ! -f "$pub" ]; then
+        field_err "no such file: $pub"
+        printf '\033[?25l'; pause_key; return 1
+    fi
+
+    printf '\n'
+    if [ "${AUTHS[$idx]}" = "pass" ] && command -v sshpass >/dev/null 2>&1; then
+        local pass; pass=$(b64dec "${SECRETS[$idx]}")
+        TERM="$SSH_TERM" sshpass -d 3 ssh-copy-id -p "${PORTS[$idx]}" -i "$pub" \
+            "${USERS[$idx]}@${HOSTS[$idx]}" 3< <(printf '%s\n' "$pass")
+    else
+        TERM="$SSH_TERM" ssh-copy-id -p "${PORTS[$idx]}" -i "$pub" \
+            "${USERS[$idx]}@${HOSTS[$idx]}"
+    fi
+
+    if [ $? -eq 0 ]; then
+        printf '\n  %s✓ key installed%s\n' "$OK" "$R"
+        if confirm "Switch this server to key auth?"; then
+            AUTHS[$idx]="key"
+            SECRETS[$idx]="${pub%.pub}"
+            save_config
+            printf '  %s✓ %s now uses %s%s\n' "$OK" "${NAMES[$idx]}" "${SECRETS[$idx]}" "$R"
+            FLASH="${OK}✓ ${NAMES[$idx]} now uses key auth$R"
+        fi
+    else
+        field_err "ssh-copy-id failed."
+    fi
+    printf '\033[?25l'
+    pause_key
+}
+
+# ------------------------------------------------------------- main loop ----
+
+ui_loop() {
+    enter_ui
+    apply_filter
+    local st o
+    while :; do
+        draw
+        read_key; st=$?
+        if [ $st -ne 0 ]; then
+            if [ $st -gt 128 ]; then continue; fi
+            break
+        fi
+
+        # ---- filter mode ------------------------------------------------
+        if [ $FILTERING -eq 1 ]; then
+            case "$KEY" in
+                ENTER)  FILTERING=0 ;;
+                ESC)    FILTERING=0; FILTER=""; apply_filter ;;
+                BSPACE) FILTER="${FILTER%?}"; apply_filter ;;
+                UP)     [ ${#FIDX[@]} -gt 0 ] && { SEL=$((SEL - 1)); [ $SEL -lt 0 ] && SEL=$(( ${#FIDX[@]} - 1 )); } ;;
+                DOWN)   [ ${#FIDX[@]} -gt 0 ] && { SEL=$((SEL + 1)); [ $SEL -ge ${#FIDX[@]} ] && SEL=0; } ;;
+                LEFT|RIGHT|PGUP|PGDN|HOME|END|OTHER) ;;
+                *)      FILTER="$FILTER$KEY"; apply_filter ;;
+            esac
+            continue
+        fi
+
+        # ---- normal mode ------------------------------------------------
+        local total=${#FIDX[@]}
+        case "$KEY" in
+            UP|k)   [ "$total" -gt 0 ] && { SEL=$((SEL - 1)); [ $SEL -lt 0 ] && SEL=$((total - 1)); } ;;
+            DOWN|j) [ "$total" -gt 0 ] && { SEL=$((SEL + 1)); [ $SEL -ge "$total" ] && SEL=0; } ;;
+            HOME|g) SEL=0 ;;
+            END|G)  [ "$total" -gt 0 ] && SEL=$((total - 1)) ;;
+            PGUP)   SEL=$((SEL - 5)); [ $SEL -lt 0 ] && SEL=0 ;;
+            PGDN)   SEL=$((SEL + 5)); [ $SEL -ge "$total" ] && SEL=$((total - 1)); [ $SEL -lt 0 ] && SEL=0 ;;
+            /)      FILTERING=1 ;;
+            ESC)    if [ -n "$FILTER" ]; then FILTER=""; apply_filter; fi ;;
+            ENTER)  o=$(cur); [ "$o" != "-1" ] && connect "$o" 1 ;;
+            a|A)    server_form -1 ;;
+            e|E)    o=$(cur); [ "$o" != "-1" ] && { server_form "$o"; } ;;
+            d|D)    o=$(cur); [ "$o" != "-1" ] && delete_server "$o" ;;
+            c|C)    o=$(cur); [ "$o" != "-1" ] && copy_key "$o" ;;
+            q|Q)    break ;;
+            *)      ;;
+        esac
+    done
+    leave_ui
+}
+
+# ------------------------------------------------------------------ cli ----
+
+cmd_list() {
+    local i=0
+    if [ ${#NAMES[@]} -eq 0 ]; then
+        echo "No servers configured. Run 'sshm' and press 'a' to add one."
+        return 0
+    fi
+    while [ $i -lt ${#NAMES[@]} ]; do
+        printf '%-20s %s@%s:%s%s\n' "${NAMES[$i]}" "${USERS[$i]}" \
+            "${HOSTS[$i]}" "${PORTS[$i]}" \
+            "$([ "${AUTHS[$i]}" = key ] && echo '  [key]')"
+        i=$((i + 1))
+    done
+}
+
+usage() {
+    cat <<HELPTEXT
+sshm $VERSION - a fast, vibrant SSH connection manager
+
+USAGE
+    sshm              open the interactive server list
+    sshm <name>       connect straight to a saved server
+    sshm list         print saved servers, no TUI
+    sshm paste        upload the clipboard image to the open session
+    sshm --help       this message
+
+KEYS (interactive)
+    ↑/↓ or j/k   move           ⏎    connect
+    /            filter          esc  clear filter
+    a add        e edit          d    delete
+    c send public key to server  q    quit
+
+ENVIRONMENT
+    SSHM_TERM   TERM value sent to the remote host
+                (default: $SSH_TERM, because terminals like Ghostty and kitty
+                export a TERM most servers do not have in their terminfo)
+    SSHM_CLIP   set to 0 to disable the clipboard image bridge
+    SSHM_CLIP_POLL
+                seconds between clipboard checks (default: 1)
+    SSHM_ALIVE_INTERVAL
+                seconds between keepalives on an idle session (default: 20,
+                0 disables them and lets idle connections hang again)
+    SSHM_ALIVE_COUNT
+                missed keepalives before ssh gives up (default: 3)
+    SSHM_CONNECT_TIMEOUT
+                seconds to wait for the initial connection (default: 10)
+    NO_COLOR    set to disable all colour
+
+CONFIG
+    $CONF_FILE  (mode 0600)
+    Passwords are stored base64-encoded, which is NOT encryption.
+HELPTEXT
+}
+
+main() {
+    STTY_SAVE=$(stty -g 2>/dev/null)
+    trap cleanup EXIT
+    trap 'cleanup; exit 130' INT TERM
+    trap ':' WINCH
+
+    build_pads
+    ensure_config
+    load_config
+
+    case "${1:-}" in
+        "")
+            if [ ! -t 0 ] || [ ! -t 1 ]; then
+                die "no terminal available; try 'sshm list' or 'sshm <name>'"
+            fi
+            ui_loop
+            ;;
+        list|ls)          cmd_list ;;
+        paste|clip)       cmd_paste; exit $? ;;
+        -h|--help|help)   usage ;;
+        -v|--version)     printf 'sshm %s\n' "$VERSION" ;;
+        -*)               die "unknown option: $1 (try --help)" ;;
+        *)
+            local idx
+            idx=$(find_index "$1")
+            [ "$idx" = "-1" ] && die "no server named '$1' (try 'sshm list')"
+            connect "$idx" 0
+            exit $?
+            ;;
+    esac
+}
+
+main "$@"

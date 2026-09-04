@@ -1,0 +1,11 @@
+# build output
+gui/.build/
+gui/sshm.app/
+gui/dist/
+
+# release-machine local config: the repo name and the feed URL are per-checkout,
+# and the EdDSA *private* key lives in the keychain, never here
+gui/.github-repo
+gui/.feed-url
+
+.DS_Store
