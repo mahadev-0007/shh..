@@ -43,14 +43,14 @@ fi
 
 # --- build -------------------------------------------------------------------
 ./build.sh release
-BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" sshm.app/Contents/Info.plist)
+BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" shh.app/Contents/Info.plist)
 
-ARCHIVE="dist/ArkConnect-$VERSION.zip"
+ARCHIVE="dist/shh-$VERSION.zip"
 mkdir -p dist
 rm -f "$ARCHIVE"
 # ditto, not zip: it preserves the bundle's symlinks and resource forks, which
 # a plain zip mangles and Sparkle then refuses to install.
-ditto -c -k --sequesterRsrc --keepParent sshm.app "$ARCHIVE"
+ditto -c -k --sequesterRsrc --keepParent shh.app "$ARCHIVE"
 
 # --- sign --------------------------------------------------------------------
 # EdDSA over the archive. This is what authenticates the update, since the app
@@ -61,7 +61,7 @@ LENGTH=$(stat -f%z "$ARCHIVE")
 
 # --- appcast -----------------------------------------------------------------
 DATE=$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")
-URL="https://github.com/$REPO/releases/download/v$VERSION/ArkConnect-$VERSION.zip"
+URL="https://github.com/$REPO/releases/download/v$VERSION/shh-$VERSION.zip"
 NOTES_FILE="dist/notes-$VERSION.html"
 if [ -f "RELEASE_NOTES.md" ]; then
     printf '<![CDATA[%s]]>' "$(sed 's/^# .*//' RELEASE_NOTES.md)" > "$NOTES_FILE"
@@ -113,6 +113,10 @@ p.write_text(s)
 print("appcast updated for", version)
 PY
 
+# a disk image for people installing by hand; Sparkle keeps using the zip
+DMG="dist/shh-$VERSION.dmg"
+tools/make-dmg.sh "$VERSION" "$DMG"
+
 echo "archive: $ARCHIVE  ($LENGTH bytes)"
 echo "sig:     $SIGNATURE"
 
@@ -122,18 +126,26 @@ if [ -n "$DRY_RUN" ]; then
 fi
 
 # --- publish -----------------------------------------------------------------
-command -v gh >/dev/null || { echo "gh not installed"; exit 1; }
-gh auth status >/dev/null 2>&1 || { echo "run: gh auth login"; exit 1; }
-
-gh release create "v$VERSION" "$ARCHIVE" \
-    --repo "$REPO" --title "ArkConnect $VERSION" \
-    --notes-file "${RELEASE_NOTES:-RELEASE_NOTES.md}" 2>/dev/null \
-  || gh release upload "v$VERSION" "$ARCHIVE" --repo "$REPO" --clobber
-
-# the appcast is served from the repo, so it has to be pushed for clients to see it
+# the appcast has to be on the remote before the release, or a client that
+# checks in the gap sees an entry pointing at an asset that isn't there yet
 git add appcast.xml VERSION
 git commit -qm "Appcast for $VERSION" || true
-git push origin HEAD --tags
+git push -q origin HEAD --tags
+
+if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    gh release create "v$VERSION" "$ARCHIVE" "$DMG" \
+        --repo "$REPO" --title "shh $VERSION" \
+        --notes-file "${RELEASE_NOTES:-RELEASE_NOTES.md}" 2>/dev/null \
+      || gh release upload "v$VERSION" "$ARCHIVE" "$DMG" --repo "$REPO" --clobber
+else
+    # gh isn't set up; fall back to the token git already uses for this remote
+    echo "gh unavailable — publishing through the API"
+    TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill \
+            | sed -n 's/^password=//p')
+    [ -n "$TOKEN" ] || { echo "no GitHub credential found; run: gh auth login"; exit 1; }
+    TOKEN="$TOKEN" REPO="$REPO" VERSION="$VERSION" \
+        ARCHIVE="$ARCHIVE" DMG="$DMG" python3 ../tools/publish-release.py
+fi
 
 echo
 echo "released $VERSION ($BUILD)"

@@ -54,7 +54,7 @@ final class Sidebar: ThemedView {
         // brand
         let mark = IconTile(side: 32, radius: 9)
         mark.configure(icon: .emoji("🤫"), accent: Ink.accent)
-        let name = NSTextField(labelWithString: "ArkConnect")
+        let name = NSTextField(labelWithString: "shh")
         name.font = Fonts.sys(14, .semibold)
         name.textColor = Text.primary
         let tag = NSTextField(labelWithString: "Projects. Servers. Anywhere.")

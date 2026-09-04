@@ -40,13 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appItem = NSMenuItem()
         let app = NSMenu()
-        app.addItem(item("About ArkConnect", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""))
+        app.addItem(item("About shh", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""))
         app.addItem(item("Check for Updates…", #selector(MainWindowController.checkForUpdates(_:)), ""))
         app.addItem(.separator())
         app.addItem(item("Settings…", #selector(MainWindowController.showSettings(_:)), ","))
         app.addItem(.separator())
-        app.addItem(item("Hide sshm", #selector(NSApplication.hide(_:)), "h"))
-        app.addItem(item("Quit sshm", #selector(NSApplication.terminate(_:)), "q"))
+        app.addItem(item("Hide shh", #selector(NSApplication.hide(_:)), "h"))
+        app.addItem(item("Quit shh", #selector(NSApplication.terminate(_:)), "q"))
         appItem.submenu = app
         bar.addItem(appItem)
 

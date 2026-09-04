@@ -9,7 +9,7 @@ final class MainWindowController: NSWindowController {
                          styleMask: [.titled, .closable, .miniaturizable, .resizable,
                                      .fullSizeContentView],
                          backing: .buffered, defer: false)
-        w.title = "ArkConnect"
+        w.title = "shh"
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.backgroundColor = Ink.bg
