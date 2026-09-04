@@ -5,6 +5,27 @@
         <description>Updates for ArkConnect</description>
         <language>en</language>
         <item>
+            <title>1.0.3</title>
+            <pubDate>Fri, 04 Sep 2026 19:15:17 +0000</pubDate>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>1.0.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[Fixes silent loss of your projects.
+
+Swift's synthesized Codable initialiser ignores property defaults, so every time
+the app gained a new setting, configs written by an older version failed to
+decode. The old error handling then reset to defaults and saved over the file,
+taking your projects with it.
+
+Config now decodes leniently — a missing key falls back to its default — and a
+file that cannot be parsed is never overwritten. Every historical config format
+is verified to load.]]></description>
+            <enclosure url="https://github.com/mahadev-0007/shh../releases/download/v1.0.3/shh-1.0.3.zip"
+                       length="3903414"
+                       type="application/octet-stream"
+                       sparkle:edSignature="iE0SuREV4EFCniUnrxNbb0UvX9vzmLsUIig5lqKLQ9uhZ1ojYLqIaT47RUYp3zm5vn3fC3/iPM0jwYF4/LLPBw==" />
+        </item>
+        <item>
             <title>1.0.2</title>
             <pubDate>Fri, 04 Sep 2026 19:09:18 +0000</pubDate>
             <sparkle:version>11</sparkle:version>
