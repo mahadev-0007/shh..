@@ -1,10 +1,12 @@
-Fixes silent loss of your projects.
+Sessions now survive a dropped connection, and tell you when they want you.
 
-Swift's synthesized Codable initialiser ignores property defaults, so every time
-the app gained a new setting, configs written by an older version failed to
-decode. The old error handling then reset to defaults and saved over the file,
-taking your projects with it.
-
-Config now decodes leniently — a missing key falls back to its default — and a
-file that cannot be parsed is never overwritten. Every historical config format
-is verified to load.
+- Agents run inside tmux on the server, so a dropped link no longer kills the
+  work — reconnecting lands back in the same agent, mid-conversation
+- Automatic reconnect with backoff, paused while the Mac is offline, and never
+  for a session you exited yourself
+- macOS notifications on the bell, on connection changes, and optionally when a
+  long run goes quiet — only for a session you aren't already watching
+- Right-click a tab to duplicate a session; a project can have several, each an
+  independent agent
+- Exit codes are decoded correctly for the first time; ssh's 255 was arriving as
+  65280, so none of the error messages had ever matched

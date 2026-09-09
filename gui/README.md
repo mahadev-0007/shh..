@@ -142,6 +142,42 @@ Settings → Config.
 | `SSHM_TERM` | `xterm-256color` | `TERM` sent to the remote host |
 | `XDG_CONFIG_HOME` | `~/.config` | where `sshm/` lives |
 
+## Sessions that survive a bad connection
+
+Each project's agent runs inside `tmux` on the server, in a session named after
+the project. When the link drops the agent keeps working; reconnecting attaches
+to the same one, mid-conversation, with scrollback intact. shh retries on its
+own with backoff, pausing while the Mac is offline, and never retries a session
+you exited yourself or one refused for a bad password.
+
+Needs `tmux` on the server. Without it, sessions run directly as before — shh
+probes for it on first connect and falls back quietly. Turn the whole thing off
+in Settings → Sessions.
+
+A project can have as many sessions as you like: right-click a tab → **Duplicate
+Session**, or ⇧⌘D. Each duplicate is a genuinely independent agent with its own
+tmux session, and tabs after the first are labelled `#2`, `#3`.
+
+## Notifications
+
+shh raises a macOS notification when a session wants you, but only for a session
+you are **not** currently watching — no banner for the terminal already in front
+of you, just an amber dot on its tab.
+
+| Trigger | Notes |
+| --- | --- |
+| Terminal bell | What Claude Code and most agents ring when they finish or need input. Survives tmux. |
+| OSC 9 / OSC 777 | Notifications a tool sends itself. **tmux filters these**, so they rarely arrive with Keep alive on. |
+| Connection | Dropped, reconnected, or exited with an error. |
+| Went quiet | Guesses a long run finished when output stops for 15s. Off by default; it misfires. |
+
+Claude Code only rings the bell when `preferredNotifChannel` is set to
+`terminal_bell` in its settings — without that, use the connection and
+went-quiet triggers instead.
+
+macOS asks permission the first time a notification fires; if refused, shh
+bounces its Dock icon instead.
+
 ## Images into a session
 
 Paste (`⌘V`) or drag an image into a running session and it is uploaded to the

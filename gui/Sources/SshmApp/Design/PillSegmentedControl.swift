@@ -10,6 +10,8 @@ struct PillItem: Equatable {
     /// nil = not a session. true = process alive.
     var running: Bool?
     var closable: Bool = false
+    /// Something happened in this session that hasn't been seen.
+    var attention: Bool = false
 }
 
 /// The rounded dark track with a raised chip that springs between items. Stock
@@ -18,6 +20,8 @@ struct PillItem: Equatable {
 final class PillSegmentedControl: ThemedView {
     var onSelect: ((String) -> Void)?
     var onClose: ((String) -> Void)?
+    /// Right-click on a pill; return the menu to show, or nil for none.
+    var onContextMenu: ((String) -> NSMenu?)?
 
     private(set) var items: [PillItem] = []
     private(set) var selectedID: String?
@@ -91,8 +95,12 @@ final class PillSegmentedControl: ThemedView {
         // Rebuilding the buttons on every selection throws away the chip's
         // current position, so it teleports instead of sliding. Only rebuild
         // when the bar's shape actually changed.
+        // title and attention must be part of "shape": a renamed tab (#2) or a
+        // newly-lit attention dot has to rebuild, or it never appears
         let sameShape = items.map(\.id) == self.items.map(\.id)
             && items.map(\.running) == self.items.map(\.running)
+            && items.map(\.title) == self.items.map(\.title)
+            && items.map(\.attention) == self.items.map(\.attention)
             && dividerBefore == self.dividerBefore
 
         self.items = items
@@ -112,6 +120,7 @@ final class PillSegmentedControl: ThemedView {
             let b = PillButton(item: item)
             b.onSelect = { [weak self] in self?.select(item.id, notify: true) }
             b.onClose = { [weak self] in self?.onClose?(item.id) }
+            b.onContextMenu = { [weak self] in self?.onContextMenu?(item.id) }
             track.addSubview(b)
             return b
         }
@@ -195,6 +204,7 @@ final class PillButton: ThemedView {
     let item: PillItem
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
+    var onContextMenu: (() -> NSMenu?)?
 
     var isActive = false { didSet { applyTheme() } }
 
@@ -274,7 +284,10 @@ final class PillButton: ThemedView {
         label.textColor = isActive ? Text.primary : (hovering ? Text.secondary : Text.muted)
         label.font = isActive ? Fonts.rounded(12.5, .semibold) : Fonts.caption
         if let running = item.running {
-            dot.layer?.backgroundColor = (running ? Ink.success : Ink.neutral).cg(self)
+            // amber wins: unseen activity matters more than merely being alive
+            let tone: NSColor = item.attention ? Ink.warning
+                                               : (running ? Ink.success : Ink.neutral)
+            dot.layer?.backgroundColor = tone.cg(self)
         }
         closeButton.contentTintColor = isActive ? Text.secondary : Text.muted
         iconImage.contentTintColor = isActive ? Text.primary : Text.muted
@@ -295,4 +308,6 @@ final class PillButton: ThemedView {
     override func mouseExited(with event: NSEvent) { hovering = false; applyTheme() }
     override func mouseDown(with event: NSEvent) { onSelect?() }
     @objc private func closeClicked() { onClose?() }
+
+    override func menu(for event: NSEvent) -> NSMenu? { onContextMenu?() }
 }

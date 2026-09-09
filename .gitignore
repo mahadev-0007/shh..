@@ -1,6 +1,6 @@
 # build output
 gui/.build/
-gui/sshm.app/
+gui/*.app/
 gui/dist/
 
 # release-machine local config: the repo name and the feed URL are per-checkout,

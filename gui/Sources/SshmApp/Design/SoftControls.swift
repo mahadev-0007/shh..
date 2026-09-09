@@ -174,9 +174,18 @@ final class FormRow: NSView {
             l.leadingAnchor.constraint(equalTo: leadingAnchor),
             l.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             control.leadingAnchor.constraint(equalTo: l.trailingAnchor, constant: Space.md),
-            control.trailingAnchor.constraint(equalTo: trailingAnchor),
             control.topAnchor.constraint(equalTo: topAnchor),
         ]
+
+        // A field or a popup wants the whole row; a switch is a fixed-size
+        // control and pinning it to the trailing edge just strands it a long
+        // way from the label it belongs to.
+        if control is NSSwitch {
+            constraints.append(
+                control.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor))
+        } else {
+            constraints.append(control.trailingAnchor.constraint(equalTo: trailingAnchor))
+        }
 
         if let hint {
             let h = NSTextField(labelWithString: hint)

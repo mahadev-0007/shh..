@@ -51,14 +51,43 @@ enum Shell {
     /// A human-readable version of what a project will run. The real script is
     /// fully quoted and carries a PATH-check hint, which is right to send but
     /// unreadable on screen.
-    static func preview(target: String, path: String?, agent: AgentDef?) -> String {
+    static func preview(target: String, path: String?, agent: AgentDef?,
+                        durable: Bool = false) -> String {
         var inner: [String] = []
         if let p = path, !p.isEmpty { inner.append("cd \(p)") }
         let command = (agent?.command ?? "").trimmingCharacters(in: .whitespaces)
         if !command.isEmpty { inner.append(command) }
         if agent?.keepShell ?? true { inner.append("exec $SHELL -l") }
         let wrapper = agent?.shell ?? AgentDef.defaultShell
-        return "ssh -t \(target)\n  \(wrapper) '\(inner.joined(separator: "; "))'"
+        let run = "\(wrapper) '\(inner.joined(separator: "; "))'"
+        if durable {
+            return "ssh -t \(target)\n  tmux new-session -A -s <project> -- \(run)"
+        }
+        return "ssh -t \(target)\n  \(run)"
+    }
+
+    /// Wrap a command so it runs inside a named tmux session.
+    ///
+    /// `new-session -A` means *attach if it exists, otherwise create*. That one
+    /// flag is the whole feature: when the link drops, the agent keeps running
+    /// on the server, and the next connect lands back in it with scrollback
+    /// intact instead of starting a fresh one.
+    ///
+    /// The login-shell wrapper stays *inside* tmux deliberately — a tmux pane
+    /// runs a non-login shell by default, which would undo the PATH fix that
+    /// makes nvm-managed `claude` and `cmd` findable.
+    static func tmuxWrap(_ inner: String, name: String, cwd: String?) -> String {
+        var parts = ["tmux", "-u", "new-session", "-A", "-s", quote(name)]
+        if let cwd, !cwd.isEmpty { parts += ["-c", quotePath(cwd)] }
+        parts.append("--")
+
+        // tmux filters escape sequences it doesn't understand, which is why
+        // OSC 9 / OSC 777 notifications never reach us from inside a session.
+        // allow-passthrough lets a tool opt back in by wrapping them; most
+        // don't, but it costs nothing and the terminal bell gets through
+        // regardless (bell-action defaults to `any`).
+        let prep = "tmux set-option -g allow-passthrough on >/dev/null 2>&1; "
+        return prep + "exec " + parts.joined(separator: " ") + " " + inner
     }
 
     /// The single remote-command argv element handed to `ssh -t`.
@@ -68,7 +97,8 @@ enum Shell {
     /// a script intact. The command runs under a *login* shell because `claude`,
     /// `codex` and friends are usually nvm/asdf-managed and are not on the
     /// default non-interactive PATH.
-    static func remoteScript(path: String?, agent: AgentDef?) -> String? {
+    static func remoteScript(path: String?, agent: AgentDef?,
+                             durableName: String? = nil) -> String? {
         var inner: [String] = []
 
         if let p = path, !p.isEmpty {
@@ -105,6 +135,13 @@ enum Shell {
         let script = inner.joined(separator: "\n")
         let wrapper = agent?.shell ?? AgentDef.defaultShell
         guard isSafe(wrapper) else { return nil }
-        return "exec \(wrapper) \(quote(script))"
+        let run = "\(wrapper) \(quote(script))"
+
+        if let name = durableName, isSafe(name) {
+            // tmux already puts us in `path`, so the inner cd is harmless but
+            // redundant; keeping it means a missing tmux still lands correctly.
+            return tmuxWrap(run, name: name, cwd: path)
+        }
+        return "exec \(run)"
     }
 }

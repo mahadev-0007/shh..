@@ -196,6 +196,21 @@ struct AppSettings: Codable, Equatable {
     var pasteImagesToServer: Bool = true
     var automaticUpdates: Bool = true
 
+    /// Keep the agent running on the server inside tmux, so a dropped link can
+    /// reattach to it instead of losing the work.
+    var durableSessions: Bool = true
+    /// Retry automatically when a connection drops.
+    var autoReconnect: Bool = true
+
+    var notifyOnBell: Bool = true
+    var notifyOnRemote: Bool = true
+    var notifyOnDisconnect: Bool = true
+    /// Output going quiet after a long run. The one heuristic that misfires,
+    /// so it stays off unless asked for.
+    var notifyOnIdle: Bool = false
+    /// Ring the system alert sound as well as showing a banner.
+    var bellSound: Bool = true
+
     init() {}
 
     init(from decoder: Decoder) throws {
@@ -209,6 +224,16 @@ struct AppSettings: Codable, Equatable {
         theme = lenient(c, .theme, d.theme)
         pasteImagesToServer = lenient(c, .pasteImagesToServer, d.pasteImagesToServer)
         automaticUpdates = lenient(c, .automaticUpdates, d.automaticUpdates)
+        // every new field needs a line here as well as a stored property —
+        // this initialiser replaces the synthesized one, so anything missing
+        // silently resets to its default on load
+        durableSessions = lenient(c, .durableSessions, d.durableSessions)
+        autoReconnect = lenient(c, .autoReconnect, d.autoReconnect)
+        notifyOnBell = lenient(c, .notifyOnBell, d.notifyOnBell)
+        notifyOnRemote = lenient(c, .notifyOnRemote, d.notifyOnRemote)
+        notifyOnDisconnect = lenient(c, .notifyOnDisconnect, d.notifyOnDisconnect)
+        notifyOnIdle = lenient(c, .notifyOnIdle, d.notifyOnIdle)
+        bellSound = lenient(c, .bellSound, d.bellSound)
     }
 }
 

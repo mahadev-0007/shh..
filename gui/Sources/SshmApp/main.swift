@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         buildMenu()
         Updater.shared.start()
+        Notifier.shared.configure()
         let c = MainWindowController()
         c.showWindow(nil)
         c.window?.makeKeyAndOrderFront(nil)
@@ -86,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let winItem = NSMenuItem()
         let win = NSMenu(title: "Window")
         win.addItem(item("Close Session", #selector(MainWindowController.closeSession(_:)), "w"))
+        win.addItem(item("Duplicate Session",
+                         #selector(MainWindowController.duplicateSession(_:)), "d",
+                         [.command, .shift]))
         win.addItem(item("Next Session", #selector(MainWindowController.nextSession(_:)), "]",
                          [.command, .shift]))
         win.addItem(item("Previous Session", #selector(MainWindowController.prevSession(_:)), "[",

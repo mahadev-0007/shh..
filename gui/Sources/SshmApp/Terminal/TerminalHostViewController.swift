@@ -8,8 +8,25 @@ final class TerminalHostViewController: NSViewController {
     private(set) var sessions: [SSHSession] = []
     private(set) var current: SSHSession?
 
-    var onSessionsChanged: (() -> Void)?
-    var onSessionSelected: (() -> Void)?
+    /// Multicast: the shell watches these to refresh pills, and the sessions
+    /// page watches them to rebuild its list. A single closure meant whichever
+    /// registered last silently replaced the other.
+    private var changeObservers: [(key: String, body: () -> Void)] = []
+    private var selectObservers: [(key: String, body: () -> Void)] = []
+
+    func onSessionsChanged(_ key: String, _ body: @escaping () -> Void) {
+        changeObservers.removeAll { $0.key == key }
+        changeObservers.append((key, body))
+    }
+    func onSessionSelected(_ key: String, _ body: @escaping () -> Void) {
+        selectObservers.removeAll { $0.key == key }
+        selectObservers.append((key, body))
+    }
+    private func sessionsChanged() { changeObservers.forEach { $0.body() } }
+    private func sessionSelected() { selectObservers.forEach { $0.body() } }
+
+    /// Bring a session forward — used when a notification is clicked.
+    var onRequestFocus: ((String) -> Void)?
 
     /// Transient feedback for the image bridge, floated over the terminal so it
     /// never writes into the session's output.
@@ -42,12 +59,24 @@ final class TerminalHostViewController: NSViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + (isError ? 6 : 2.5), execute: w)
     }
 
-    func open(_ spec: LaunchSpec) {
+    @discardableResult
+    func open(_ spec: LaunchSpec) -> SSHSession {
         let s = SSHSession(spec: spec)
-        s.onStateChange = { [weak self] in self?.onSessionsChanged?() }
+        // second session of a project is "#2", and gets its own tmux session
+        if let pid = spec.projectID {
+            let taken = sessions.filter { $0.projectID == pid }.map(\.ordinal)
+            s.ordinal = (taken.max() ?? 0) + 1
+        }
+        s.onStateChange = { [weak self] in self?.sessionsChanged() }
         s.onImageStatus = { [weak self] text, isError in
             self?.showToast(text, isError: isError)
         }
+        s.onNotify = { [weak self] title, body, kind in
+            guard let self else { return }
+            Notifier.shared.notify(sessionID: s.id, title: title, body: body, kind: kind,
+                                   isVisible: self.current === s)
+        }
+        s.terminal.sessionTitle = { [weak s] in s?.title ?? "Session" }
         sessions.append(s)
 
         let t = s.terminal
@@ -64,7 +93,14 @@ final class TerminalHostViewController: NSViewController {
 
         select(id: s.id)
         s.start()
-        onSessionsChanged?()
+        ServerCapabilities.probe(spec.server, controlPath: s.controlPath)
+        sessionsChanged()
+        return s
+    }
+
+    /// Every session belonging to a project, in the order they were opened.
+    func sessions(forProject id: String) -> [SSHSession] {
+        sessions.filter { $0.projectID == id }
     }
 
     func session(forProject id: String) -> SSHSession? {
@@ -77,8 +113,11 @@ final class TerminalHostViewController: NSViewController {
         for other in sessions { other.terminal.isHidden = other !== s }
         let dark = view.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         view.layer?.backgroundColor = Theme.wash(s.spec.accent, dark: dark).cgColor
+        // looking at it counts as reading it
+        s.markSeen()
+        Notifier.shared.clear(sessionID: s.id)
         focusCurrent()
-        onSessionSelected?()
+        sessionSelected()
     }
 
     func focusCurrent() {
@@ -97,7 +136,13 @@ final class TerminalHostViewController: NSViewController {
             current = nil
             if !sessions.isEmpty { select(id: sessions[min(i, sessions.count - 1)].id) }
         }
-        onSessionsChanged?()
+        Notifier.shared.clear(sessionID: id)
+        sessionsChanged()
+    }
+
+    /// Close everything except one — the "Close others" tab action.
+    func closeOthers(keeping id: String) {
+        for s in sessions where s.id != id { close(id: s.id) }
     }
 
     func cycle(_ delta: Int) {

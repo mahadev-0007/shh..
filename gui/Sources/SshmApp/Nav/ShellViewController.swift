@@ -40,6 +40,7 @@ final class ShellViewController: NSViewController {
         pillBar.translatesAutoresizingMaskIntoConstraints = false
         pillBar.onSelect = { [weak self] id in self?.pillTapped(id) }
         pillBar.onClose = { [weak self] id in self?.closeSessionPill(id) }
+        pillBar.onContextMenu = { [weak self] id in self?.sessionMenu(for: id) }
 
         container.translatesAutoresizingMaskIntoConstraints = false
         pillHeight = pillBar.heightAnchor.constraint(equalToConstant: 40)
@@ -65,8 +66,11 @@ final class ShellViewController: NSViewController {
         view = root
 
         addChild(terminals)
-        terminals.onSessionsChanged = { [weak self] in self?.refreshPills() }
-        terminals.onSessionSelected = { [weak self] in self?.refreshPills() }
+        terminals.onSessionsChanged("shell") { [weak self] in self?.refreshPills() }
+        terminals.onSessionSelected("shell") { [weak self] in self?.refreshPills() }
+        Notifier.shared.onActivateSession = { [weak self] id in
+            self?.focusSession(id: id)
+        }
     }
 
     override func viewDidLoad() {
@@ -307,6 +311,54 @@ final class ShellViewController: NSViewController {
 
     // MARK: - commands
 
+    /// Right-click menu for a session tab.
+    private func sessionMenu(for pillID: String) -> NSMenu? {
+        guard pillID.hasPrefix("s:") else { return nil }
+        let sessionID = String(pillID.dropFirst(2))
+        guard let session = terminals.sessions.first(where: { $0.id == sessionID })
+        else { return nil }
+
+        let menu = NSMenu()
+        func add(_ title: String, _ run: @escaping () -> Void) {
+            let item = NSMenuItem(title: title, action: #selector(runMenuAction(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = MenuAction(run)
+            menu.addItem(item)
+        }
+
+        add("Duplicate Session") { [weak self] in
+            // a second, independent session on the same project — its own tab
+            // and its own tmux session on the server
+            self?.openSession(session.spec, forceNew: true)
+        }
+        menu.addItem(.separator())
+        if case .reconnecting = session.state {
+            add("Reconnect Now") { session.reconnectNow() }
+            add("Stop Reconnecting") { session.stopReconnecting() }
+        } else if !session.isRunning {
+            add("Reconnect") { session.reconnectNow() }
+        }
+        add("Close Session") { [weak self] in self?.closeSessionPill(pillID) }
+        if terminals.sessions.count > 1 {
+            add("Close Other Sessions") { [weak self] in
+                self?.terminals.closeOthers(keeping: sessionID)
+                self?.refreshPills()
+            }
+        }
+        return menu
+    }
+
+    @objc private func runMenuAction(_ sender: NSMenuItem) {
+        (sender.representedObject as? MenuAction)?.run()
+    }
+
+    /// Duplicate whichever session is on screen (⇧⌘D).
+    func duplicateCurrentSession() {
+        guard let s = terminals.current else { return }
+        openSession(s.spec, forceNew: true)
+    }
+
     /// Bring an already-running session forward (the Dashboard's "Running now").
     func focusSession(id: String) {
         guard terminals.sessions.contains(where: { $0.id == id }) else { return }
@@ -345,4 +397,11 @@ final class ShellViewController: NSViewController {
 protocol NavigatingPage: AnyObject {
     var pushPage: ((PageViewController) -> Void)? { get set }
     var openSession: ((LaunchSpec, Bool) -> Void)? { get set }
+}
+
+
+/// Boxes a closure so it can ride on an NSMenuItem's representedObject.
+final class MenuAction {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
 }

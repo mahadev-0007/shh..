@@ -7,6 +7,8 @@ final class SettingsPageVC: PageViewController {
 
     override var pillItems: [PillItem] {
         [PillItem(id: "agents", title: "Agents"),
+         PillItem(id: "sessions", title: "Sessions"),
+         PillItem(id: "notifications", title: "Notifications"),
          PillItem(id: "appearance", title: "Appearance"),
          PillItem(id: "updates", title: "Updates"),
          PillItem(id: "config", title: "Config")]
@@ -24,6 +26,8 @@ final class SettingsPageVC: PageViewController {
         onPillsChanged?()
         setActions([])
         switch tab {
+        case "sessions":      buildSessions()
+        case "notifications": buildNotifications()
         case "appearance": buildAppearance()
         case "updates":    buildUpdates()
         case "config":     buildConfig()
@@ -112,6 +116,99 @@ final class SettingsPageVC: PageViewController {
 
     private func editAgent(_ a: AgentDef?) {
         presentAsSheet(AgentEditorController(agent: a))
+    }
+
+    // MARK: - sessions
+
+    private func buildSessions() {
+        pageSubtitle = "How sessions survive a bad connection."
+
+        body.addWide(FormRow("Keep alive", toggle(\.durableSessions,
+                                                  #selector(durableChanged)),
+                             hint: "Run each project's agent inside tmux on the server, so a "
+                                 + "dropped connection doesn't kill it. Reconnecting drops you "
+                                 + "back into the same agent, mid-conversation. Needs tmux on "
+                                 + "the server; without it, sessions run directly as before."))
+
+        body.addWide(FormRow("Auto-reconnect", toggle(\.autoReconnect,
+                                                      #selector(autoReconnectChanged)),
+                             hint: "Retry automatically when the link drops, backing off up to "
+                                 + "30s and pausing while this Mac is offline. A session you "
+                                 + "exited yourself, or one refused for a bad password, is "
+                                 + "never retried."))
+
+        let note = NSTextField(wrappingLabelWithString:
+            "Duplicate a session by right-clicking its tab, or with ⇧⌘D. Each duplicate gets "
+          + "its own agent on the server, so two tabs on one project are genuinely independent.")
+        note.font = Fonts.caption
+        note.textColor = Text.muted
+        note.wraps(lines: 3)
+        body.addWide(note)
+    }
+
+    @objc private func durableChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.durableSessions = s.state == .on }
+    }
+    @objc private func autoReconnectChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.autoReconnect = s.state == .on }
+    }
+
+    // MARK: - notifications
+
+    private func buildNotifications() {
+        pageSubtitle = "Told only about the session you aren't watching."
+
+        body.addWide(FormRow("Bell", toggle(\.notifyOnBell, #selector(bellChanged)),
+                             hint: "Agents ring the terminal bell when they finish or need "
+                                 + "input. Claude Code only does this when its "
+                                 + "preferredNotifChannel is set to terminal_bell."))
+        body.addWide(FormRow("Bell sound", toggle(\.bellSound, #selector(bellSoundChanged)),
+                             hint: "Also play the system alert sound."))
+        body.addWide(FormRow("From the server", toggle(\.notifyOnRemote,
+                                                       #selector(remoteChanged)),
+                             hint: "Notifications a tool sends itself, via the OSC 9 and "
+                                 + "OSC 777 escape sequences. tmux filters these, so with "
+                                 + "Keep alive on they rarely arrive — the bell still does."))
+        body.addWide(FormRow("Connection", toggle(\.notifyOnDisconnect,
+                                                  #selector(disconnectChanged)),
+                             hint: "When a session drops, reconnects, or exits with an error."))
+        body.addWide(FormRow("Went quiet", toggle(\.notifyOnIdle, #selector(idleChanged)),
+                             hint: "Guess that a long-running command finished when its output "
+                                 + "stops for 15 seconds. Catches agents that never ring the "
+                                 + "bell, and will occasionally misfire."))
+
+        let note = NSTextField(wrappingLabelWithString:
+            "macOS asks permission the first time a notification fires. If you refuse, shh "
+          + "bounces its Dock icon instead.")
+        note.font = Fonts.caption
+        note.textColor = Text.muted
+        note.wraps(lines: 3)
+        body.addWide(note)
+    }
+
+    /// A switch bound to one boolean setting.
+    private func toggle(_ key: KeyPath<AppSettings, Bool>, _ action: Selector) -> NSSwitch {
+        let s = NSSwitch()
+        s.state = AppModel.shared.settings[keyPath: key] ? .on : .off
+        s.target = self
+        s.action = action
+        return s
+    }
+
+    @objc private func bellChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.notifyOnBell = s.state == .on }
+    }
+    @objc private func bellSoundChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.bellSound = s.state == .on }
+    }
+    @objc private func remoteChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.notifyOnRemote = s.state == .on }
+    }
+    @objc private func disconnectChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.notifyOnDisconnect = s.state == .on }
+    }
+    @objc private func idleChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.notifyOnIdle = s.state == .on }
     }
 
     // MARK: - appearance

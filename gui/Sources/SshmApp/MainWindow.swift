@@ -46,6 +46,7 @@ final class MainWindowController: NSWindowController {
     @objc func showSettings(_ sender: Any?)  { root.go(to: .settings) }
 
     @objc func closeSession(_ sender: Any?) { root.shell.closeCurrentSession() }
+    @objc func duplicateSession(_ sender: Any?) { root.shell.duplicateCurrentSession() }
     @objc func nextSession(_ sender: Any?)  { root.shell.nextSession() }
     @objc func prevSession(_ sender: Any?)  { root.shell.prevSession() }
 
