@@ -5,6 +5,29 @@
         <description>Updates for ArkConnect</description>
         <language>en</language>
         <item>
+            <title>1.1.0</title>
+            <pubDate>Wed, 09 Sep 2026 20:13:48 +0000</pubDate>
+            <sparkle:version>17</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[Sessions now survive a dropped connection, and tell you when they want you.
+
+- Agents run inside tmux on the server, so a dropped link no longer kills the
+  work — reconnecting lands back in the same agent, mid-conversation
+- Automatic reconnect with backoff, paused while the Mac is offline, and never
+  for a session you exited yourself
+- macOS notifications on the bell, on connection changes, and optionally when a
+  long run goes quiet — only for a session you aren't already watching
+- Right-click a tab to duplicate a session; a project can have several, each an
+  independent agent
+- Exit codes are decoded correctly for the first time; ssh's 255 was arriving as
+  65280, so none of the error messages had ever matched]]></description>
+            <enclosure url="https://github.com/mahadev-0007/shh../releases/download/v1.1.0/shh-1.1.0.zip"
+                       length="3940349"
+                       type="application/octet-stream"
+                       sparkle:edSignature="HqzLEHa3XN2xodj3IhEzKdnbGCG8rnHBaqj6XKJBpgHs7ToRjpehuN3rZPhGXApNlnM+GkRugEfhEg5W+Wt4Bg==" />
+        </item>
+        <item>
             <title>1.0.3</title>
             <pubDate>Fri, 04 Sep 2026 19:15:17 +0000</pubDate>
             <sparkle:version>14</sparkle:version>
