@@ -39,6 +39,7 @@ final class MainWindowController: NSWindowController {
     @objc func showProjects(_ sender: Any?)  { root.go(to: .projects) }
     @objc func showServers(_ sender: Any?)   { root.go(to: .servers) }
     @objc func showSessions(_ sender: Any?)  { root.go(to: .sessions) }
+    @objc func showFiles(_ sender: Any?)     { root.go(to: .files) }
     @objc func commandPalette(_ sender: Any?) { root.shell.openPalette() }
     @objc func toggleTheme(_ sender: Any?)   { root.shell.cycleTheme() }
     @objc func toggleFocusMode(_ sender: Any?) { root.shell.toggleFocusMode() }
@@ -46,7 +47,14 @@ final class MainWindowController: NSWindowController {
     @objc func showSettings(_ sender: Any?)  { root.go(to: .settings) }
 
     @objc func closeSession(_ sender: Any?) { root.shell.closeCurrentSession() }
+    @objc func endSession(_ sender: Any?) { root.shell.endCurrentSession() }
     @objc func duplicateSession(_ sender: Any?) { root.shell.duplicateCurrentSession() }
+    @objc func browseFiles(_ sender: Any?) { root.shell.browseCurrentSessionFiles() }
+    @objc func reopenClosedSession(_ sender: Any?) { root.shell.reopenClosedSession() }
+    @objc func selectSessionNumber(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        root.shell.selectSession(number: item.tag)
+    }
     @objc func nextSession(_ sender: Any?)  { root.shell.nextSession() }
     @objc func prevSession(_ sender: Any?)  { root.shell.prevSession() }
 

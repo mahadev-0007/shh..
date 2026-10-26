@@ -142,6 +142,11 @@ class PageViewController: NSViewController {
     /// Hand the whole page to one view, or pass nil to go back to the normal
     /// header-plus-scroll layout.
     func setFullBleed(_ view: NSView?) {
+        // Already showing it: leave it be. Pulling a terminal host out of the
+        // window and putting it back makes every terminal in it re-measure,
+        // and this runs on each session status change.
+        if let view, view.superview === fullBleed, fullBleed.subviews.count == 1,
+           !fullBleed.isHidden { return }
         fullBleed.subviews.forEach { $0.removeFromSuperview() }
         guard let view else {
             fullBleed.isHidden = true
@@ -213,4 +218,12 @@ final class ThemedCanvas: ThemedView {
 /// Top-anchored coordinate space for scroll content.
 final class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+
+extension PageViewController {
+    /// The shell hosting this page, for jumps into another section.
+    var shellController: ShellViewController? {
+        (view.window?.contentViewController as? RootSplitViewController)?.shell
+    }
 }

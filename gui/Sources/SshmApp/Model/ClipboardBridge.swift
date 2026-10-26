@@ -113,6 +113,73 @@ enum ClipboardBridge {
         }
     }
 
+    // MARK: - files
+
+    private static let imageExtensions: Set<String> =
+        ["png", "jpg", "jpeg", "gif", "heic", "tiff", "webp", "bmp"]
+
+    /// Local files on a pasteboard that should go up as files rather than as an
+    /// image. A single image file keeps the image path (it is normalized to
+    /// PNG, which every agent can read); anything else — a PDF, a folder,
+    /// several files at once — is sent as-is.
+    ///
+    /// Checked before `hasImage`: Finder puts the file's *icon* on the
+    /// pasteboard as TIFF next to the URL, so copying a PDF would otherwise
+    /// upload a picture of a PDF icon.
+    static func fileURLs(from pb: NSPasteboard) -> [URL]? {
+        guard let urls = pb.readObjects(forClasses: [NSURL.self],
+                                        options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else { return nil }
+        if urls.count == 1, imageExtensions.contains(urls[0].pathExtension.lowercased()) {
+            return nil
+        }
+        return urls
+    }
+
+    /// Upload local files or folders over sftp and call back on the main queue
+    /// with their remote paths, in the order given.
+    ///
+    /// Each drop gets a directory of its own so the original names survive and
+    /// two drops of `notes.txt` can't overwrite each other.
+    static func upload(files urls: [URL], controlPath: String, target: String,
+                       completion: @escaping (Result<[String], Error>) -> Void) {
+        let script = "d=${XDG_CACHE_HOME:-$HOME/.cache}/sshm-clip/drop-\(Self.stamp()); "
+                   + "mkdir -p \"$d\" && printf '%s' \"$d\""
+        // ride the session's master: no handshake, and no password to supply
+        let mux = ["-o", "ControlPath=\(controlPath)", "-o", "ControlMaster=no",
+                   "-o", "BatchMode=yes"]
+
+        RemoteExec.run(Tools.ssh, args: mux + [target, script], password: nil) { made in
+            let dir: String
+            switch made {
+            case .failure(let e): completion(.failure(e)); return
+            case .success(let out):
+                dir = out.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !dir.isEmpty else { completion(.failure(Failure.uploadFailed(""))); return }
+            }
+            let remote = urls.map { RemoteFiles.join(dir, $0.lastPathComponent) }
+            let batch = zip(urls, remote).map {
+                "put -r \(RemoteFiles.sftpQuote($0.path)) \(RemoteFiles.sftpQuote($1))"
+            }
+            let input = Data((batch.joined(separator: "\n") + "\n").utf8)
+            RemoteExec.run(Tools.sftp, args: mux + ["-b", "-", target],
+                           password: nil, input: input) { sent in
+                completion(sent.map { _ in remote })
+            }
+        }
+    }
+
+    /// Paths as they should be typed into a shell or an agent prompt: bare when
+    /// that is unambiguous, single-quoted when a space or metacharacter would
+    /// split or expand them.
+    static func typed(_ paths: [String]) -> String {
+        let plain = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+,@%:=")
+        return paths.map {
+            $0.unicodeScalars.allSatisfy(plain.contains) ? $0 : Shell.quote($0)
+        }.joined(separator: " ")
+    }
+
     private static func stamp() -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"

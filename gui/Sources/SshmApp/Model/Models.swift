@@ -191,8 +191,8 @@ struct AppSettings: Codable, Equatable {
     var lastSection: String = "dashboard"
     var shareConnectionPerServer: Bool = true
     var theme: ThemeMode = .dark
-    /// Paste or drop an image into a session and it is uploaded to the
-    /// server, with the remote path typed in. Never writes the clipboard.
+    /// Paste or drop an image or file into a session and it is uploaded to
+    /// the server, with the remote path typed in. Never writes the clipboard.
     var pasteImagesToServer: Bool = true
     var automaticUpdates: Bool = true
 
@@ -315,6 +315,10 @@ struct LaunchSpec {
     var accent: NSColor
     /// Set when this session belongs to a project, so a second click can find it.
     var projectID: String?
+    /// Reattach to this exact tmux session (and take its tab number) instead of
+    /// deriving a name — used to reopen one left running in the background.
+    var tmuxName: String? = nil
+    var ordinal: Int? = nil
 }
 
 /// Turn a typed name into a servers.conf key: lowercase, dashes, no pipes.

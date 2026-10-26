@@ -73,27 +73,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let goItem = NSMenuItem()
         let go = NSMenu(title: "Go")
-        go.addItem(item("Dashboard", #selector(MainWindowController.showDashboard(_:)), "1"))
-        go.addItem(item("Projects", #selector(MainWindowController.showProjects(_:)), "2"))
-        go.addItem(item("Servers", #selector(MainWindowController.showServers(_:)), "3"))
-        go.addItem(item("Sessions", #selector(MainWindowController.showSessions(_:)), "4"))
-        go.addItem(item("Settings", #selector(MainWindowController.showSettings(_:)), "5"))
+        // ⌘1…⌘9 belong to session tabs, as in a browser; sections take ⌃⌘
+        let sectionKeys: NSEvent.ModifierFlags = [.command, .control]
+        go.addItem(item("Dashboard", #selector(MainWindowController.showDashboard(_:)), "1", sectionKeys))
+        go.addItem(item("Projects", #selector(MainWindowController.showProjects(_:)), "2", sectionKeys))
+        go.addItem(item("Servers", #selector(MainWindowController.showServers(_:)), "3", sectionKeys))
+        go.addItem(item("Sessions", #selector(MainWindowController.showSessions(_:)), "4", sectionKeys))
+        go.addItem(item("Files", #selector(MainWindowController.showFiles(_:)), "5", sectionKeys))
+        go.addItem(item("Settings", #selector(MainWindowController.showSettings(_:)), "6", sectionKeys))
         go.addItem(.separator())
         go.addItem(item("Toggle Appearance", #selector(MainWindowController.toggleTheme(_:)), "t",
-                        [.command, .shift]))
+                        [.command, .option]))
         goItem.submenu = go
         bar.addItem(goItem)
 
         let winItem = NSMenuItem()
         let win = NSMenu(title: "Window")
-        win.addItem(item("Close Session", #selector(MainWindowController.closeSession(_:)), "w"))
+        win.addItem(item("Close Tab", #selector(MainWindowController.closeSession(_:)), "w"))
+        win.addItem(item("End Session…", #selector(MainWindowController.endSession(_:)), "w",
+                         [.command, .option]))
+        win.addItem(item("Reopen Closed Session",
+                         #selector(MainWindowController.reopenClosedSession(_:)), "t",
+                         [.command, .shift]))
         win.addItem(item("Duplicate Session",
                          #selector(MainWindowController.duplicateSession(_:)), "d",
+                         [.command, .shift]))
+        win.addItem(item("Browse Files", #selector(MainWindowController.browseFiles(_:)), "f",
                          [.command, .shift]))
         win.addItem(item("Next Session", #selector(MainWindowController.nextSession(_:)), "]",
                          [.command, .shift]))
         win.addItem(item("Previous Session", #selector(MainWindowController.prevSession(_:)), "[",
                          [.command, .shift]))
+        let pick = NSMenu(title: "Go to Session")
+        for n in 1...9 {
+            let i = item(n == 9 ? "Last Session" : "Session \(n)",
+                         #selector(MainWindowController.selectSessionNumber(_:)), "\(n)")
+            i.tag = n
+            pick.addItem(i)
+        }
+        let pickItem = NSMenuItem(title: "Go to Session", action: nil, keyEquivalent: "")
+        pickItem.submenu = pick
+        win.addItem(pickItem)
         win.addItem(.separator())
         win.addItem(item("Focus Mode", #selector(MainWindowController.toggleFocusMode(_:)), "f",
                          [.command, .control]))

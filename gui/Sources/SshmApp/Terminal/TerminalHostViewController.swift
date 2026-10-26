@@ -22,8 +22,17 @@ final class TerminalHostViewController: NSViewController {
         selectObservers.removeAll { $0.key == key }
         selectObservers.append((key, body))
     }
-    private func sessionsChanged() { changeObservers.forEach { $0.body() } }
-    private func sessionSelected() { selectObservers.forEach { $0.body() } }
+    private func sessionsChanged() { updateStatusCard(); changeObservers.forEach { $0.body() } }
+    private func sessionSelected() { updateStatusCard(); selectObservers.forEach { $0.body() } }
+
+    /// Close a tab through the shell, so the tab bar hears about it.
+    var onCloseRequest: ((String) -> Void)?
+    /// End a session (close the tab and kill its tmux session), through the shell.
+    var onEndRequest: ((SSHSession) -> Void)?
+
+    /// Floats over the bottom of the terminal while the session isn't connected.
+    private let statusCard = SessionStatusCard()
+    private var keyMonitor: Any?
 
     /// Bring a session forward — used when a notification is clicked.
     var onRequestFocus: ((String) -> Void)?
@@ -42,7 +51,81 @@ final class TerminalHostViewController: NSViewController {
             banner.topAnchor.constraint(equalTo: root.topAnchor, constant: Space.md),
             banner.centerXAnchor.constraint(equalTo: root.centerXAnchor),
         ])
+
+        statusCard.translatesAutoresizingMaskIntoConstraints = false
+        statusCard.isHidden = true
+        root.addSubview(statusCard)
+        let wide = statusCard.widthAnchor.constraint(equalToConstant: 620)
+        wide.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            statusCard.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Space.xl),
+            statusCard.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            statusCard.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor,
+                                              constant: -Space.xl * 2),
+            wide,
+        ])
+        statusCard.onReconnect = { [weak self] in self?.current?.reconnectNow() }
+        statusCard.onStop = { [weak self] in self?.current?.stopReconnecting() }
+        statusCard.onEnd = { [weak self] in
+            guard let self, let s = self.current else { return }
+            self.onEndRequest?(s)
+        }
+        statusCard.onClose = { [weak self] in
+            guard let self, let id = self.current?.id else { return }
+            if let close = self.onCloseRequest { close(id) } else { self.close(id: id) }
+        }
+
+        // ⏎ in a finished session reconnects it. The terminal itself can't be
+        // taught this (SwiftTerm's keyDown isn't open), so catch it on the way in.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            // ⇧⏎ is how Claude Code and friends take a newline. Talking to us
+            // directly they turn on the kitty keyboard protocol and SwiftTerm
+            // reports the shift. Inside tmux (durable sessions) that request
+            // never reaches us, so ⇧⏎ would arrive as a bare ⏎ and submit.
+            // Send a line feed instead — the newline every agent accepts
+            // (it's ⌃J), and a plain shell still runs the line.
+            if let self, let s = self.current, s.isRunning,
+               e.window === self.view.window,
+               e.window?.firstResponder === s.terminal,
+               e.keyCode == 36 || e.keyCode == 76,
+               e.modifierFlags.intersection([.command, .control, .option, .shift]) == .shift,
+               s.terminal.getTerminal().keyboardEnhancementFlags.isEmpty {
+                s.terminal.send(txt: "\n")
+                return nil
+            }
+            guard let self, let s = self.current, case .ended = s.state,
+                  e.window === self.view.window,
+                  e.window?.firstResponder === s.terminal,
+                  e.keyCode == 36 || e.keyCode == 76,
+                  e.modifierFlags.intersection([.command, .control, .option]).isEmpty
+            else { return e }
+            s.reconnectNow()
+            return nil
+        }
         view = root
+    }
+
+    private func updateStatusCard() {
+        guard isViewLoaded else { return }
+        let show = current.map { statusCard.show($0) } ?? false
+        if show {
+            // keep it above whichever terminal is in front
+            view.addSubview(statusCard, positioned: .above, relativeTo: nil)
+            if statusCard.isHidden {
+                statusCard.alphaValue = 0
+                statusCard.isHidden = false
+                NSAnimationContext.runAnimationGroup { $0.duration = 0.2
+                    statusCard.animator().alphaValue = 1 }
+            }
+        } else if !statusCard.isHidden {
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.15
+                statusCard.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                guard let self, self.current.map({ !self.statusCard.show($0) }) ?? true
+                else { return }
+                self.statusCard.isHidden = true
+            })
+        }
     }
 
     func showToast(_ text: String, isError: Bool) {
@@ -65,7 +148,11 @@ final class TerminalHostViewController: NSViewController {
         // second session of a project is "#2", and gets its own tmux session
         if let pid = spec.projectID {
             let taken = sessions.filter { $0.projectID == pid }.map(\.ordinal)
-            s.ordinal = (taken.max() ?? 0) + 1
+            if let wanted = spec.ordinal, !taken.contains(wanted) {
+                s.ordinal = wanted
+            } else {
+                s.ordinal = (taken.max() ?? 0) + 1
+            }
         }
         s.onStateChange = { [weak self] in self?.sessionsChanged() }
         s.onImageStatus = { [weak self] text, isError in
@@ -127,9 +214,37 @@ final class TerminalHostViewController: NSViewController {
         }
     }
 
+    /// Recently closed tabs, newest last, for "Reopen Closed Session".
+    private var closed: [(spec: LaunchSpec, index: Int)] = []
+    var canReopen: Bool { !closed.isEmpty }
+
+    func popClosed() -> (spec: LaunchSpec, index: Int)? { closed.popLast() }
+
+    /// Put the sessions in this order (ids not listed keep their place at the end).
+    func reorder(ids: [String]) {
+        let rank = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
+        let sorted = sessions.enumerated().sorted {
+            (rank[$0.element.id] ?? ids.count + $0.offset)
+                < (rank[$1.element.id] ?? ids.count + $1.offset)
+        }.map(\.element)
+        guard sorted.map(\.id) != sessions.map(\.id) else { return }
+        sessions = sorted
+        sessionsChanged()
+    }
+
+    /// Move one session to a position, clamped to the ends.
+    func move(id: String, to index: Int) {
+        guard let from = sessions.firstIndex(where: { $0.id == id }) else { return }
+        let s = sessions.remove(at: from)
+        sessions.insert(s, at: max(0, min(index, sessions.count)))
+        sessionsChanged()
+    }
+
     func close(id: String) {
         guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
         let s = sessions.remove(at: i)
+        closed.append((s.spec, i))
+        if closed.count > 20 { closed.removeFirst() }
         s.terminate()
         s.terminal.removeFromSuperview()
         if current === s {
@@ -143,6 +258,20 @@ final class TerminalHostViewController: NSViewController {
     /// Close everything except one — the "Close others" tab action.
     func closeOthers(keeping id: String) {
         for s in sessions where s.id != id { close(id: s.id) }
+    }
+
+    /// Close every session after this one — the "Close to the right" tab action.
+    func closeAfter(id: String) {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
+        for s in sessions[(i + 1)...].reversed() { close(id: s.id) }
+    }
+
+    /// Select by position: 1-based, and 9 always means the last one.
+    func select(number n: Int) {
+        guard !sessions.isEmpty else { return }
+        let i = n >= 9 ? sessions.count - 1 : n - 1
+        guard sessions.indices.contains(i) else { return }
+        select(id: sessions[i].id)
     }
 
     func cycle(_ delta: Int) {

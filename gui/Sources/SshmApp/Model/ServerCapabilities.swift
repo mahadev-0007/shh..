@@ -26,7 +26,11 @@ enum ServerCapabilities {
             p.executableURL = URL(fileURLWithPath: Tools.ssh)
             // ride the session's existing master: no second handshake
             p.arguments = ["-S", controlPath, "-o", "BatchMode=yes",
-                           server.target, "command -v tmux >/dev/null && echo yes || echo no"]
+                           server.target,
+                           // same search as the session wrapper, so the two agree
+                           "sh -c " + Shell.quote("command -v tmux >/dev/null 2>&1 && echo yes && exit; "
+                               + "for c in \(Shell.tmuxPaths); do [ -x \"$c\" ] && echo yes && exit; done; "
+                               + "echo no")]
             p.standardOutput = out
             p.standardError = FileHandle.nullDevice
             var found = false

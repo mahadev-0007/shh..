@@ -78,7 +78,11 @@ final class ServersPageVC: PageViewController, NavigatingPage {
         edit.onClick = { [weak self] in
             self?.pushPage?(ServerEditPageVC(editing: vm))
         }
-        let buttons = NSStackView(views: [shell, edit])
+        let files = SoftButton("Files", symbol: "folder", style: .quiet)
+        files.onClick = { [weak self] in
+            self?.shellController?.browseFiles(server: vm, path: "~")
+        }
+        let buttons = NSStackView(views: [shell, files, edit])
         buttons.orientation = .horizontal
         buttons.spacing = Space.xs
 

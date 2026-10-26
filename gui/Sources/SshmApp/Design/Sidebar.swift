@@ -1,7 +1,7 @@
 import AppKit
 
 enum RailSection: String, CaseIterable {
-    case dashboard, projects, servers, sessions, settings
+    case dashboard, projects, servers, sessions, files, settings
 
     var title: String {
         switch self {
@@ -9,6 +9,7 @@ enum RailSection: String, CaseIterable {
         case .projects:  return "Projects"
         case .servers:   return "Servers"
         case .sessions:  return "Sessions"
+        case .files:     return "Files"
         case .settings:  return "Settings"
         }
     }
@@ -18,6 +19,7 @@ enum RailSection: String, CaseIterable {
         case .projects:  return "folder"
         case .servers:   return "externaldrive.connected.to.line.below"
         case .sessions:  return "terminal"
+        case .files:     return "folder.badge.gearshape"
         case .settings:  return "gearshape"
         }
     }
@@ -27,11 +29,12 @@ enum RailSection: String, CaseIterable {
         case .projects:  return "▤"
         case .servers:   return "▥"
         case .sessions:  return ">_"
+        case .files:     return "▧"
         case .settings:  return "⚙"
         }
     }
     /// Everything above the divider.
-    static var primary: [RailSection] { [.dashboard, .projects, .servers, .sessions] }
+    static var primary: [RailSection] { [.dashboard, .projects, .servers, .sessions, .files] }
 }
 
 /// The left column: brand, navigation, then settings and the account row pinned

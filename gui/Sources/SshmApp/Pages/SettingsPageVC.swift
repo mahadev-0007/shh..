@@ -270,10 +270,11 @@ final class SettingsPageVC: PageViewController {
         paste.state = AppModel.shared.settings.pasteImagesToServer ? .on : .off
         paste.target = self
         paste.action = #selector(pasteImagesChanged)
-        body.addWide(FormRow("Paste images", paste,
-                             hint: "Paste or drop an image into a session and it is uploaded to "
-                                 + "the server, with the remote path typed in for you. Your "
-                                 + "clipboard is never overwritten."))
+        body.addWide(FormRow("Paste images & files", paste,
+                             hint: "Paste or drop an image or file into a session and it is "
+                                 + "uploaded to the server, with the remote path typed in for "
+                                 + "you. Hold Option while dropping to type the local path "
+                                 + "instead. Your clipboard is never overwritten."))
 
         body.addWide(FormRow("Share connection", share,
                              hint: "Open several projects on one server over a single "

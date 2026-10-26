@@ -23,7 +23,7 @@ final class ShellViewController: NSViewController {
     private(set) var section: RailSection = .dashboard
 
     let terminals = TerminalHostViewController()
-    private var showingTerminal = false
+    private var keyMonitor: Any?
 
     /// The page currently on top of the active section's stack.
     var topPage: PageViewController? { stacks[section]?.last }
@@ -41,6 +41,10 @@ final class ShellViewController: NSViewController {
         pillBar.onSelect = { [weak self] id in self?.pillTapped(id) }
         pillBar.onClose = { [weak self] id in self?.closeSessionPill(id) }
         pillBar.onContextMenu = { [weak self] id in self?.sessionMenu(for: id) }
+        pillBar.onReorder = { [weak self] ids in
+            self?.terminals.reorder(ids: ids.filter { $0.hasPrefix("s:") }
+                                             .map { String($0.dropFirst(2)) })
+        }
 
         container.translatesAutoresizingMaskIntoConstraints = false
         pillHeight = pillBar.heightAnchor.constraint(equalToConstant: 40)
@@ -67,9 +71,21 @@ final class ShellViewController: NSViewController {
 
         addChild(terminals)
         terminals.onSessionsChanged("shell") { [weak self] in self?.refreshPills() }
+        terminals.onCloseRequest = { [weak self] id in self?.closeSessionPill("s:\(id)") }
+        terminals.onEndRequest = { [weak self] s in self?.endSession(s) }
         terminals.onSessionSelected("shell") { [weak self] in self?.refreshPills() }
         Notifier.shared.onActivateSession = { [weak self] id in
             self?.focusSession(id: id)
+        }
+        // ⌃Tab / ⌃⇧Tab cycle tabs like a browser. A local monitor, because the
+        // focused terminal would otherwise take the key for itself.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, e.window === self.view.window, e.keyCode == 48,
+                  e.modifierFlags.contains(.control),
+                  !e.modifierFlags.contains(.command),
+                  !self.terminals.sessions.isEmpty else { return e }
+            e.modifierFlags.contains(.shift) ? self.prevSession() : self.nextSession()
+            return nil
         }
     }
 
@@ -123,6 +139,13 @@ final class ShellViewController: NSViewController {
                 self?.openSession(AppModel.shared.launchSpec(forServer: vm), forceNew: false)
             })
         }
+        for vm in AppModel.shared.serverList {
+            rows.append(.init(group: "Files", title: "Browse files on \(vm.title)",
+                              detail: vm.subtitle, icon: .symbol("folder"),
+                              accent: vm.accent) { [weak self] in
+                self?.browseFiles(server: vm, path: "~")
+            })
+        }
         for s in terminals.sessions {
             rows.append(.init(group: "Sessions", title: s.spec.title,
                               detail: s.isRunning ? "running" : "exited",
@@ -140,6 +163,7 @@ final class ShellViewController: NSViewController {
                 (self?.topPage as? ServersPageVC)?.addServer() }),
             ("Go to dashboard", "square.grid.2x2", { [weak self] in self?.root?.go(to: .dashboard) }),
             ("Go to sessions", "terminal", { [weak self] in self?.root?.go(to: .sessions) }),
+            ("Go to files", "folder", { [weak self] in self?.root?.go(to: .files) }),
             ("Settings", "gearshape", { [weak self] in self?.root?.go(to: .settings) }),
             ("Toggle appearance", "circle.lefthalf.filled", { [weak self] in self?.cycleTheme() }),
         ]
@@ -155,7 +179,6 @@ final class ShellViewController: NSViewController {
     func show(section s: RailSection) {
         section = s
         if stacks[s] == nil { stacks[s] = [makeRoot(for: s)] }
-        showingTerminal = false
         present(top!)
         refreshPills()
         topBar.setPrimary(title: s == .servers ? "New server" : "New project")
@@ -168,6 +191,7 @@ final class ShellViewController: NSViewController {
         case .projects:  page = ProjectsPageVC()
         case .servers:   page = ServersPageVC()
         case .sessions:  page = SessionsPageVC(host: terminals)
+        case .files:     page = FilesHomePageVC()
         case .settings:  page = SettingsPageVC()
         }
         wire(page)
@@ -189,7 +213,6 @@ final class ShellViewController: NSViewController {
         page.onBack = { [weak self] in self?.pop() }
         stacks[section, default: []].append(page)
         page.installBackButton()
-        showingTerminal = false
         present(page)
         refreshPills()
     }
@@ -199,7 +222,6 @@ final class ShellViewController: NSViewController {
         let gone = stack.removeLast()
         stacks[section] = stack
         gone.removeFromParent()
-        showingTerminal = false
         present(stack.last!)
         refreshPills()
     }
@@ -227,21 +249,26 @@ final class ShellViewController: NSViewController {
         }
     }
 
-    private func presentTerminals() {
-        showingTerminal = true
-        let v = terminals.view
-        v.translatesAutoresizingMaskIntoConstraints = false
-        for sub in container.subviews { sub.removeFromSuperview() }
-        container.addSubview(v)
-        NSLayoutConstraint.activate([
-            v.topAnchor.constraint(equalTo: container.topAnchor),
-            v.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            v.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-        terminals.focusCurrent()
-        if let s = terminals.current {
-            view.window?.title = "🤫 \(s.spec.title) · \(s.spec.subtitle)"
+    /// Show the current session's terminal.
+    ///
+    /// The Sessions page is the one and only place the terminal host lives.
+    /// It used to be dropped straight into the content area from here as well,
+    /// and the two fought over it: the next status change reloaded the
+    /// off-screen Sessions page, which pulled the terminals into itself and
+    /// left the window blank until another tab was clicked.
+    private func showCurrentSession() {
+        guard let s = terminals.current else { return }
+        if section != .sessions {
+            root?.go(to: .sessions)
+        } else {
+            while (stacks[.sessions]?.count ?? 0) > 1 { pop() }
+        }
+        guard let page = stacks[.sessions]?.first as? SessionsPageVC else { return }
+        if page.view.superview !== container { present(page) }
+        page.show(sessionID: s.id)
+        refreshPills()
+        DispatchQueue.main.async { [weak self] in
+            self?.view.window?.title = "🤫 \(s.spec.title) · \(s.spec.subtitle)"
         }
     }
 
@@ -264,13 +291,9 @@ final class ShellViewController: NSViewController {
 
     private func closeSessionPill(_ id: String) {
         guard id.hasPrefix("s:") else { return }
+        // the Sessions page watches the host and moves to the neighbour, or
+        // back to its list when this was the last one
         terminals.close(id: String(id.dropFirst(2)))
-        if terminals.sessions.isEmpty {
-            showingTerminal = false
-            if let t = top { present(t) }
-        } else {
-            presentTerminals()
-        }
         refreshPills()
     }
 
@@ -284,12 +307,7 @@ final class ShellViewController: NSViewController {
             items = page.pillItems
         }
 
-        let selected: String?
-        if showingTerminal, let c = terminals.current {
-            selected = "s:\(c.id)"
-        } else {
-            selected = top?.selectedPill ?? items.first?.id
-        }
+        let selected = top?.selectedPill ?? items.first?.id
         pillBar.set(items: items, selected: selected, dividerBefore: divider)
         // A lone page pill is noise, but a lone *session* pill is the only way
         // back to that tab — it must never be hidden.
@@ -299,13 +317,8 @@ final class ShellViewController: NSViewController {
     }
 
     private func pillTapped(_ id: String) {
-        if id.hasPrefix("s:") {
-            terminals.select(id: String(id.dropFirst(2)))
-            presentTerminals()
-        } else {
-            if showingTerminal, let t = top { showingTerminal = false; present(t) }
-            top?.pillSelected(id)
-        }
+        // session pills only exist on the Sessions page, which handles both kinds
+        top?.pillSelected(id)
         refreshPills()
     }
 
@@ -327,11 +340,8 @@ final class ShellViewController: NSViewController {
             menu.addItem(item)
         }
 
-        add("Duplicate Session") { [weak self] in
-            // a second, independent session on the same project — its own tab
-            // and its own tmux session on the server
-            self?.openSession(session.spec, forceNew: true)
-        }
+        add("Duplicate Session") { [weak self] in self?.duplicate(session) }
+        add("Browse Files") { [weak self] in self?.browseFiles(of: session) }
         menu.addItem(.separator())
         if case .reconnecting = session.state {
             add("Reconnect Now") { session.reconnectNow() }
@@ -339,12 +349,25 @@ final class ShellViewController: NSViewController {
         } else if !session.isRunning {
             add("Reconnect") { session.reconnectNow() }
         }
-        add("Close Session") { [weak self] in self?.closeSessionPill(pillID) }
+        add("Close Tab") { [weak self] in self?.closeSessionPill(pillID) }
+        if session.tmuxName != nil {
+            add("End Session…") { [weak self] in self?.endSession(session) }
+        }
         if terminals.sessions.count > 1 {
             add("Close Other Sessions") { [weak self] in
                 self?.terminals.closeOthers(keeping: sessionID)
                 self?.refreshPills()
             }
+        }
+        if terminals.sessions.last?.id != sessionID {
+            add("Close Sessions to the Right") { [weak self] in
+                self?.terminals.closeAfter(id: sessionID)
+                self?.refreshPills()
+            }
+        }
+        if terminals.canReopen {
+            menu.addItem(.separator())
+            add("Reopen Closed Session") { [weak self] in self?.reopenClosedSession() }
         }
         return menu
     }
@@ -353,18 +376,100 @@ final class ShellViewController: NSViewController {
         (sender.representedObject as? MenuAction)?.run()
     }
 
+    /// Open the file browser on a server in the Files section, replacing
+    /// whatever browser was there so Back always lands on the server list.
+    func browseFiles(server: ServerVM, path: String) {
+        root?.go(to: .files)
+        while (stacks[.files]?.count ?? 0) > 1 { pop() }
+        push(FilesPageVC(server: server, startPath: path))
+    }
+
+    /// Files for a session's server, starting where the session started (⇧⌘F).
+    func browseFiles(of session: SSHSession) {
+        let vm = AppModel.shared.serverVM(slug: session.server.name)
+            ?? ServerVM(server: session.server, meta: nil)
+        browseFiles(server: vm, path: session.spec.path ?? "~")
+    }
+
+    /// The "New server" form, from whichever section asked for it.
+    func addServerFromAnywhere() {
+        root?.go(to: .servers)
+        (topPage as? ServersPageVC)?.addServer()
+    }
+
+    func browseCurrentSessionFiles() {
+        guard let s = terminals.current else { return }
+        browseFiles(of: s)
+    }
+
     /// Duplicate whichever session is on screen (⇧⌘D).
     func duplicateCurrentSession() {
         guard let s = terminals.current else { return }
+        duplicate(s)
+    }
+
+    /// A second, independent session on the same project — its own tab and
+    /// its own tmux session on the server — placed right after the original.
+    func duplicate(_ s: SSHSession) {
+        let at = (terminals.sessions.firstIndex { $0 === s } ?? terminals.sessions.count) + 1
         openSession(s.spec, forceNew: true)
+        if let new = terminals.current, new !== s { terminals.move(id: new.id, to: at) }
+    }
+
+    /// Close the tab *and* stop what's running in it on the server.
+    ///
+    /// Closing a tab only detaches from its tmux session — the agent keeps
+    /// going and the next open lands back in it. This is the other one.
+    func endSession(_ s: SSHSession) {
+        guard s.tmuxName != nil else { closeSessionPill("s:\(s.id)"); return }
+        guard let w = view.window else { return }
+        let a = NSAlert()
+        a.messageText = "End “\(s.title)”?"
+        let what = s.spec.agent.flatMap { $0.command.isEmpty ? nil : $0.name }
+        a.informativeText = "This stops \(what ?? "everything running") in it on "
+            + "\(s.server.display) and closes its tmux session. "
+            + "Next time it opens fresh.\n\nTo leave it running, just close the tab."
+        a.alertStyle = .warning
+        a.addButton(withTitle: "End Session")
+        a.addButton(withTitle: "Cancel")
+        a.beginSheetModal(for: w) { [weak self] r in
+            guard r == .alertFirstButtonReturn, let self else { return }
+            // close first: the tmux client detaches cleanly, then the kill
+            // has nothing attached to fight with
+            self.closeSessionPill("s:\(s.id)")
+            s.endRemote { [weak self] result in
+                if case .failure(let e) = result {
+                    self?.terminals.showToast("Couldn't end “\(s.title)” on the server: "
+                                              + e.localizedDescription, isError: true)
+                }
+            }
+        }
+    }
+
+    func endCurrentSession() {
+        guard let c = terminals.current else { return }
+        endSession(c)
+    }
+
+    /// Bring back the most recently closed tab, where it was (⇧⌘T).
+    func reopenClosedSession() {
+        guard let last = terminals.popClosed() else { return }
+        openSession(last.spec, forceNew: true)
+        if let new = terminals.current { terminals.move(id: new.id, to: last.index) }
+    }
+
+    /// ⌘1…⌘8 pick that tab, ⌘9 the last one.
+    func selectSession(number n: Int) {
+        guard !terminals.sessions.isEmpty else { return }
+        terminals.select(number: n)
+        showCurrentSession()
     }
 
     /// Bring an already-running session forward (the Dashboard's "Running now").
     func focusSession(id: String) {
         guard terminals.sessions.contains(where: { $0.id == id }) else { return }
         terminals.select(id: id)
-        presentTerminals()
-        refreshPills()
+        showCurrentSession()
     }
 
     /// Hide the sidebar and top bar so the terminal fills the window. The pill
@@ -383,8 +488,8 @@ final class ShellViewController: NSViewController {
         terminals.focusCurrent()
     }
 
-    func nextSession() { terminals.cycle(+1); if terminals.current != nil { presentTerminals() }; refreshPills() }
-    func prevSession() { terminals.cycle(-1); if terminals.current != nil { presentTerminals() }; refreshPills() }
+    func nextSession() { terminals.cycle(+1); showCurrentSession() }
+    func prevSession() { terminals.cycle(-1); showCurrentSession() }
 
     func closeCurrentSession() {
         guard let c = terminals.current else { return }

@@ -12,6 +12,7 @@ enum Env {
 enum Tools {
     static let ssh = which("ssh") ?? "/usr/bin/ssh"
     static let sshpass = which("sshpass")
+    static let sftp = which("sftp") ?? "/usr/bin/sftp"
 
     static func which(_ name: String) -> String? {
         let dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
@@ -77,18 +78,33 @@ enum Shell {
     /// runs a non-login shell by default, which would undo the PATH fix that
     /// makes nvm-managed `claude` and `cmd` findable.
     static func tmuxWrap(_ inner: String, name: String, cwd: String?) -> String {
-        var parts = ["tmux", "-u", "new-session", "-A", "-s", quote(name)]
+        var parts = ["\"$t\"", "-u", "new-session", "-A", "-s", quote(name)]
         if let cwd, !cwd.isEmpty { parts += ["-c", quotePath(cwd)] }
         parts.append("--")
 
+        // Find tmux, and run the session plainly when there isn't one. The
+        // capability probe usually knows already, but the first project
+        // opened on a server races it — and `exec tmux` with no tmux killed
+        // the session with exit 127. Homebrew's tmux also isn't on the PATH
+        // of the non-login shell ssh runs this in, so look where it lives.
+        //
         // tmux filters escape sequences it doesn't understand, which is why
         // OSC 9 / OSC 777 notifications never reach us from inside a session.
         // allow-passthrough lets a tool opt back in by wrapping them; most
         // don't, but it costs nothing and the terminal bell gets through
         // regardless (bell-action defaults to `any`).
-        let prep = "tmux set-option -g allow-passthrough on >/dev/null 2>&1; "
-        return prep + "exec " + parts.joined(separator: " ") + " " + inner
+        let script = "t=$(command -v tmux 2>/dev/null); "
+            + "for c in \(tmuxPaths); do [ -z \"$t\" ] && [ -x \"$c\" ] && t=$c; done; "
+            + "if [ -n \"$t\" ]; then "
+            + "\"$t\" set-option -g allow-passthrough on >/dev/null 2>&1; "
+            + "exec " + parts.joined(separator: " ") + " " + inner + "; fi; "
+            + "exec " + inner
+        // sh explicitly: the login shell on the far side may not be POSIX
+        return "exec sh -c " + quote(script)
     }
+
+    /// Where tmux lives when it isn't on a bare PATH (Homebrew, MacPorts, local).
+    static let tmuxPaths = "/opt/homebrew/bin/tmux /usr/local/bin/tmux /opt/local/bin/tmux"
 
     /// The single remote-command argv element handed to `ssh -t`.
     ///

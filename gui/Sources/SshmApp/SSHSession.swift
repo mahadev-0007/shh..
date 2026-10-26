@@ -45,6 +45,16 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
     /// rang. Cleared when the session is brought to the front.
     private(set) var needsAttention = false
 
+    /// Reconnecting is parked until the network comes back.
+    private(set) var waitingForNetwork = false
+    /// Every automatic attempt failed; only a manual reconnect will try again.
+    private(set) var gaveUp = false
+    /// When the session last stopped being connected.
+    private(set) var endedAt: Date?
+    /// The tmux session this tab attaches to on the server, if it uses one.
+    /// Closing the tab only detaches; ending the session kills this.
+    private(set) var tmuxName: String?
+
     private var fifoDir: URL?
     private var attempt = 0
     private var retryWork: DispatchWorkItem?
@@ -72,6 +82,7 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
     /// Stable, tmux-safe name for the remote session this tab owns.
     var remoteSessionName: String? {
         guard let pid = spec.projectID else { return nil }
+        if let exact = spec.tmuxName, ordinal == spec.ordinal { return exact }
         return "shh-\(Slug.make(spec.title))-\(ordinal)-\(pid.prefix(4).lowercased())"
     }
 
@@ -103,9 +114,7 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
         guard AppModel.shared.settings.shareConnectionPerServer else {
             return "/tmp/sshm-gui-\(getuid())-\(UUID().uuidString.prefix(8)).sock"
         }
-        var h: UInt64 = 5381
-        for b in "\(server.target):\(server.port)".utf8 { h = (h &* 33) &+ UInt64(b) }
-        return "/tmp/sshm-gui-\(getuid())-\(String(h, radix: 36)).sock"
+        return RemoteExec.controlPath(for: server)
     }
 
     func markSeen() {
@@ -131,6 +140,9 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
                     "-o", "ServerAliveCountMax=\(Env.string("SSHM_ALIVE_COUNT", "3"))",
                     "-o", "ConnectTimeout=\(Env.string("SSHM_CONNECT_TIMEOUT", "10"))",
                     "-o", "TCPKeepAlive=yes",
+                    // errors still print; the chatter ("Shared connection to …
+                    // closed.") is what the status card is for
+                    "-o", "LogLevel=ERROR",
                     "-o", "ControlMaster=auto",
                     "-o", "ControlPath=\(controlPath)",
                     "-o", "ControlPersist=\(AppModel.shared.settings.shareConnectionPerServer ? "60" : "no")"]
@@ -145,8 +157,9 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
 
         // A remote command needs an explicit pty: without -t, full-screen agents
         // like claude and codex either refuse to start or render garbage.
+        tmuxName = durableName
         if let script = Shell.remoteScript(path: spec.path, agent: spec.agent,
-                                           durableName: durableName) {
+                                           durableName: tmuxName) {
             args += ["-t", server.target, script]
         } else {
             args.append(server.target)
@@ -176,7 +189,6 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
         if wasRetrying {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                 guard let self, self.state == .running else { return }
-                self.emit(self.dim("reconnected"))
                 self.onNotify?(self.title, "Reconnected", .reconnected)
             }
         }
@@ -253,28 +265,25 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
     // MARK: - reconnecting
 
     private static let backoff: [Int] = [1, 2, 4, 8, 15, 30, 30, 30]
+    static var maxAttempts: Int { backoff.count }
 
     private func scheduleReconnect() {
         guard attempt < Self.backoff.count else {
-            emit(dim("gave up reconnecting after \(attempt) attempts — "
-                   + "press Reconnect to try again"))
+            gaveUp = true
             state = .ended(.code(255))
             return
         }
         let wait = Self.backoff[attempt]
         attempt += 1
-        state = .reconnecting(attempt: attempt, secondsLeft: wait)
 
         // Don't burn attempts against a dead interface; NetworkWatch fires the
         // moment connectivity is back.
-        guard NetworkWatch.shared.isOnline else {
-            emit(dim("waiting for the network…"))
+        waitingForNetwork = !NetworkWatch.shared.isOnline
+        state = .reconnecting(attempt: attempt, secondsLeft: wait)
+        guard !waitingForNetwork else {
             NetworkWatch.shared.onceOnline { [weak self] in self?.reconnectNow() }
             return
         }
-
-        emit(dim("connection lost — reconnecting in \(wait)s "
-               + "(attempt \(attempt)/\(Self.backoff.count))"))
 
         countdown?.invalidate()
         var left = wait
@@ -297,7 +306,10 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
         retryWork?.cancel(); retryWork = nil
         countdown?.invalidate(); countdown = nil
         guard !state.isConnected else { return }
-        emit(dim("reconnecting…"))
+        waitingForNetwork = false
+        gaveUp = false
+        // start the new connection's output on a fresh line
+        emit("\r\n")
 
         // SwiftTerm calls the termination delegate *before* clearing its own
         // `running` flag, and startProcess is a no-op while that flag is set.
@@ -314,7 +326,7 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
         retryWork?.cancel(); retryWork = nil
         countdown?.invalidate(); countdown = nil
         if case .reconnecting = state {
-            emit(dim("stopped reconnecting"))
+            waitingForNetwork = false
             state = .ended(.code(255))
         }
     }
@@ -337,6 +349,15 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
 
     // MARK: - control
 
+    /// Kill the tmux session on the server, so the agent in it stops and the
+    /// next open starts fresh. Rides the control socket when it's still up and
+    /// reconnects quietly when it isn't.
+    func endRemote(completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let name = tmuxName else { completion(.success(())); return }
+        RemoteSessions.kill(server: server, name: name, controlPath: controlPath,
+                            completion: completion)
+    }
+
     func terminate() {
         retryWork?.cancel(); retryWork = nil
         countdown?.invalidate(); countdown = nil
@@ -346,14 +367,32 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
 
     private func emit(_ note: String) { terminal.feed(text: note) }
 
-    private func dim(_ text: String) -> String {
-        "\r\n\u{1b}[2m── \(text)\u{1b}[0m\r\n"
+    /// Put the terminal back in its default modes once the far end is gone.
+    ///
+    /// A full-screen agent turns on mouse tracking, bracketed paste and the
+    /// like, and expects to turn them off again on exit. When the link drops it
+    /// never gets the chance, so the terminal keeps reporting every mouse move
+    /// — and after a reconnect those reports land in a plain shell as text
+    /// like `35;157;50M35;17;43M…`.
+    private func resetTerminalModes() {
+        let off = [
+            "?1000l", "?1002l", "?1003l", "?1005l", "?1006l", "?1015l",  // mouse
+            "?1004l",   // focus in/out reports
+            "?2004l",   // bracketed paste
+            "?1l",      // application cursor keys
+            "?25h",     // cursor visible
+            "0m",       // colours and attributes
+        ].map { "\u{1b}[\($0)" }.joined()
+        // keypad back to numeric mode, then the mode switches above
+        emit("\u{1b}>" + off)
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
 
     func processTerminated(source: TerminalView, exitCode raw: Int32?) {
         cleanupFifo()
+        resetTerminalModes()
+        endedAt = Date()
         let status = ExitStatus(rawStatus: raw ?? 0)
 
         // A session that held for a while and then dropped is a fresh failure,
@@ -371,9 +410,6 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
             return
         }
 
-        var line = "session ended · \(status.label)"
-        if let d = status.detail, case .code(let c) = status, c != 0 { line += "  (\(d))" }
-        emit(dim(line))
         if !status.isClean {
             onNotify?(title, status.detail ?? status.label, .disconnected)
         }

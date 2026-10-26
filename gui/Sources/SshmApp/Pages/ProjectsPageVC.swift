@@ -111,9 +111,18 @@ final class ProjectsPageVC: PageViewController, NavigatingPage {
         let edit = SoftButton("Edit", style: .quiet)
         edit.onClick = { [weak self] in self?.pushPage?(ProjectEditPageVC(editing: vm)) }
 
+        var trailing: [NSView] = [edit]
+        if let server = vm.server {
+            let files = SoftButton("Files", style: .quiet)
+            files.onClick = { [weak self] in
+                self?.shellController?.browseFiles(server: server, path: vm.project.path)
+            }
+            trailing.insert(files, at: 0)
+        }
+
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let bottom = NSStackView(views: [agentTag, spacer, edit])
+        let bottom = NSStackView(views: [agentTag, spacer] + trailing)
         bottom.orientation = .horizontal
         bottom.alignment = .centerY
         bottom.spacing = Space.sm
