@@ -71,6 +71,21 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Something about remote access the host should know even if they are
+    /// looking right at the window — a reused invite is a security event.
+    func notifySharing(title: String, body: String) {
+        withAuthorization { [weak self] granted in
+            guard granted else { self?.fallbackAlert(); return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(
+                identifier: "sharing-\(Date().timeIntervalSince1970)",
+                content: content, trigger: nil))
+        }
+    }
+
     func clear(sessionID: String) {
         guard pending.remove(sessionID) != nil else { return }
         updateBadge()

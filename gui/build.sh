@@ -64,6 +64,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>SUFeedURL</key>                 <string>$FEED_URL</string>
   <key>SUPublicEDKey</key>             <string>$PUBLIC_KEY</string>
   <key>SUEnableInstallerLauncherService</key> <false/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>     <string>shh invite</string>
+      <key>CFBundleURLSchemes</key>  <array><string>shh</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

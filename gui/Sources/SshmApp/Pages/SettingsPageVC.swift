@@ -4,11 +4,13 @@ import AppKit
 final class SettingsPageVC: PageViewController {
     private var tab = "agents"
     private weak var sizeReadout: NSTextField?
+    private lazy var sharing = SharingPanel(page: self)
 
     override var pillItems: [PillItem] {
         [PillItem(id: "agents", title: "Agents"),
          PillItem(id: "sessions", title: "Sessions"),
          PillItem(id: "notifications", title: "Notifications"),
+         PillItem(id: "sharing", title: "Sharing"),
          PillItem(id: "appearance", title: "Appearance"),
          PillItem(id: "updates", title: "Updates"),
          PillItem(id: "config", title: "Config")]
@@ -19,6 +21,18 @@ final class SettingsPageVC: PageViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         pageTitle = "Settings"
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(sharingChanged), name: .sshmSharingChanged, object: nil)
+    }
+
+    @objc private func sharingChanged() {
+        if tab == "sharing" { reload() }
+    }
+
+    /// Jump straight to a tab, e.g. from a menu item.
+    func show(tab id: String) {
+        tab = id
+        if isViewLoaded { reload() }
     }
 
     override func reload() {
@@ -28,6 +42,7 @@ final class SettingsPageVC: PageViewController {
         switch tab {
         case "sessions":      buildSessions()
         case "notifications": buildNotifications()
+        case "sharing":       buildSharing()
         case "appearance": buildAppearance()
         case "updates":    buildUpdates()
         case "config":     buildConfig()
@@ -209,6 +224,14 @@ final class SettingsPageVC: PageViewController {
     }
     @objc private func idleChanged(_ s: NSSwitch) {
         AppModel.shared.updateSettings { $0.notifyOnIdle = s.state == .on }
+    }
+
+    // MARK: - sharing
+
+    private func buildSharing() {
+        pageSubtitle = "Let someone you invite ssh into this Mac over Tailscale."
+        sharing.build().forEach { body.addWide($0) }
+        RemoteAccess.shared.checkRemoteLogin()
     }
 
     // MARK: - appearance

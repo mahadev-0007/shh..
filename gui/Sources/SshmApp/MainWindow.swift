@@ -35,6 +35,16 @@ final class MainWindowController: NSWindowController {
         currentServersPage?.addServer()
     }
 
+    @objc func joinInvite(_ sender: Any?) { joinInvite(link: nil) }
+
+    func joinInvite(link: String?) {
+        root.go(to: .servers)
+        // the page is created by go(to:); let it land before presenting on it
+        DispatchQueue.main.async { [weak self] in
+            self?.currentServersPage?.joinInvite(prefill: link)
+        }
+    }
+
     @objc func showDashboard(_ sender: Any?) { root.go(to: .dashboard) }
     @objc func showProjects(_ sender: Any?)  { root.go(to: .projects) }
     @objc func showServers(_ sender: Any?)   { root.go(to: .servers) }

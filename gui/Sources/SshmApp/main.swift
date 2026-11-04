@@ -12,11 +12,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
         Updater.shared.start()
         Notifier.shared.configure()
+        RemoteAccess.shared.resume()
         let c = MainWindowController()
         c.showWindow(nil)
         c.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         main = c
+    }
+
+    /// shh://join?… links from an invite.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: { $0.scheme == InviteCode.scheme }) else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        main?.joinInvite(link: url.absoluteString)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
@@ -55,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "File")
         file.addItem(item("New…", #selector(MainWindowController.newItem(_:)), "n"))
         file.addItem(item("New Server…", #selector(MainWindowController.newServer(_:)), "n",
+                          [.command, .shift]))
+        file.addItem(item("Join with Invite…", #selector(MainWindowController.joinInvite(_:)), "j",
                           [.command, .shift]))
         file.addItem(.separator())
         file.addItem(item("Reload Config", #selector(MainWindowController.reloadConfig(_:)), "r"))

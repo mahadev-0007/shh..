@@ -14,6 +14,19 @@ final class ServersPageVC: PageViewController, NavigatingPage {
         pageSubtitle = "Machines you can reach. Shared with the sshm terminal app."
         grid.itemHeight = 146
         grid.itemWidth = 280
+        let join = SoftButton("Join with invite", symbol: "person.badge.plus", style: .secondary)
+        join.onClick = { [weak self] in self?.joinInvite() }
+        setActions([join])
+    }
+
+    /// Redeem a shh:// invite someone sent, then open a shell on the new server.
+    func joinInvite(prefill: String? = nil) {
+        let sheet = JoinInviteController(prefill: prefill)
+        sheet.onJoined = { [weak self] slug in
+            guard let vm = AppModel.shared.serverVM(slug: slug) else { return }
+            self?.openSession?(AppModel.shared.launchSpec(forServer: vm), false)
+        }
+        presentAsSheet(sheet)
     }
 
     func addServer() {

@@ -121,6 +121,8 @@ before relaunching instead of dropping them.
 | --- | --- |
 | `~/.config/sshm/servers.conf` | host, user, port, auth, secret — the format the bash TUI defines. Untouched. |
 | `~/.config/sshm/sshm.json` | display names, icons, projects, agents, settings. Nothing secret. |
+| `~/.config/sshm/sharing.json` | remote sessions: on/off, open invites (token hashes only), guests. |
+| `~/.config/sshm/keys/` | the keys this Mac made to join other people's Macs. |
 
 Both are mode `0600`, written atomically, and watched — an edit from the bash TUI
 shows up here within a second, and vice versa. Passwords remain base64 in
@@ -141,6 +143,9 @@ Settings → Config.
 | `SSHM_CONNECT_TIMEOUT` | `10` | ssh connect timeout |
 | `SSHM_TERM` | `xterm-256color` | `TERM` sent to the remote host |
 | `XDG_CONFIG_HOME` | `~/.config` | where `sshm/` lives |
+| `SSHM_SHARE_PORT` | `7022` | port the invite listener uses on the tailnet address |
+| `SSHM_SSH_DIR` | `~/.ssh` | where `authorized_keys` / `known_hosts` are edited (for testing) |
+| `SSHM_SHARE_TEST_BIND` | — | bind the invite listener here and skip Tailscale; testing only |
 
 ## Sessions that survive a bad connection
 
@@ -192,6 +197,49 @@ which is where you wanted it anyway.
 
 Files land in `~/.cache/sshm-clip/` on the server. Turn the whole thing off in
 Settings → Appearance → Paste images, and `⌘V` goes back to a plain text paste.
+
+## Remote sessions over Tailscale
+
+Let one specific person ssh into your Mac, without exchanging passwords or keys
+by hand.
+
+**On the Mac being shared** — Settings → Sharing → *Allow remote sessions*, then
+**New invite**. You get a link to send them directly:
+
+```
+shh://join?a=100.101.102.103&h=bobs-mbp.tail1234.ts.net&u=bob&fp=…&t=…
+```
+
+**On theirs** — Servers → *Join with invite* (⇧⌘J), or just click the link. When
+they do, you're asked to approve them by their Tailscale account and device.
+Allow it and they land in a shell on your Mac; the server is saved for next time.
+
+How it works:
+
+* The invite carries a one-time token (stored here only as a hash), expires in 15
+  minutes, and is burned the moment anyone presents it — two people racing the
+  same link can't both reach the prompt. A second use is refused and you're told.
+* Their shh makes a fresh ed25519 key and POSTs the token and public key to a
+  small listener bound **only to this Mac's Tailscale address** (port 7022).
+  `tailscale whois` names the caller; that's what the approval prompt shows.
+* Approved, the key is appended to `~/.ssh/authorized_keys` as
+  `from="<their tailnet IPs>",no-port-forwarding,no-agent-forwarding,no-X11-forwarding … shh-guest:<id>`.
+  The key works only from their device, and only lines with that tag are ever
+  touched.
+* The invite also carries this Mac's host key fingerprint, so their shh writes
+  `known_hosts` itself and refuses an impostor rather than asking them to trust
+  one.
+* **Revoke** deletes their line and ends any session they have open. Turning the
+  switch off does that for everyone.
+
+Requirements: Tailscale on both Macs, with yours reachable from theirs — the same
+tailnet, or share the machine with them from the Tailscale admin console. And
+macOS **Remote Login** on (System Settings → General → Sharing); shh checks and
+links you there. Tailscale SSH isn't used because the Mac App Store and standalone
+Tailscale apps can't run its server; plain sshd works with all of them.
+
+Access lasts while the switch is on, even if shh is closed — it's an ordinary
+`authorized_keys` entry.
 
 ## Not done yet
 
