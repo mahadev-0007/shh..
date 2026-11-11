@@ -18,8 +18,20 @@ FEED_URL="${SSHM_FEED_URL:-$(cat .feed-url 2>/dev/null || echo '')}"
 PUBLIC_KEY="${SSHM_ED_PUBKEY:-$(cat .ed-public-key 2>/dev/null || echo '')}"
 
 CONFIG="${1:-release}"
-swift build -c "$CONFIG"
-BIN=".build/$CONFIG/SshmApp"
+if [ "$CONFIG" = "release" ]; then
+    # Universal binary, so Intel Macs (common on macOS 12) run it too. Each
+    # slice is built on its own: a single multi-arch `swift build` goes through
+    # xcbuild, which trips over SwiftTerm's build plugin.
+    swift build -c release --triple arm64-apple-macosx12.0
+    swift build -c release --triple x86_64-apple-macosx12.0
+    BIN=".build/SshmApp-universal"
+    lipo -create -output "$BIN" \
+        .build/arm64-apple-macosx/release/SshmApp \
+        .build/x86_64-apple-macosx/release/SshmApp
+else
+    swift build -c "$CONFIG"
+    BIN=".build/$CONFIG/SshmApp"
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
