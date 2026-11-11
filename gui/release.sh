@@ -75,7 +75,7 @@ ITEM=$(cat <<XML
             <pubDate>$DATE</pubDate>
             <sparkle:version>$BUILD</sparkle:version>
             <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
             <description>$(cat "$NOTES_FILE")</description>
             <enclosure url="$URL"
                        length="$LENGTH"

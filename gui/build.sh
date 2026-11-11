@@ -59,7 +59,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleIconFile</key>          <string>AppIcon</string>
-  <key>LSMinimumSystemVersion</key>    <string>13.0</string>
+  <key>LSMinimumSystemVersion</key>    <string>12.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <key>SUFeedURL</key>                 <string>$FEED_URL</string>
   <key>SUPublicEDKey</key>             <string>$PUBLIC_KEY</string>
