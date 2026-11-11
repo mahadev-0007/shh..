@@ -5,6 +5,24 @@
         <description>Updates for ArkConnect</description>
         <language>en</language>
         <item>
+            <title>1.2.1</title>
+            <pubDate>Wed, 11 Nov 2026 10:22:40 +0000</pubDate>
+            <sparkle:version>25</sparkle:version>
+            <sparkle:shortVersionString>1.2.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+
+shh now runs on more Macs.
+
+- **macOS 12 Monterey** is supported (previously macOS 13 or later)
+- **Intel Macs** are supported: the app is now a universal build for both
+  Intel and Apple Silicon]]></description>
+            <enclosure url="https://github.com/mahadev-0007/shh../releases/download/v1.2.1/shh-1.2.1.zip"
+                       length="5945908"
+                       type="application/octet-stream"
+                       sparkle:edSignature="btkWjk1tazxbfJtngINDlqYYTolYwj6XQW2fJaad9Va0xbAnE/unCJaz7ogOoc3CeVhjY39JyJlPnruZMnv2AQ==" />
+        </item>
+        <item>
             <title>1.2.0</title>
             <pubDate>Wed, 04 Nov 2026 21:40:33 +0000</pubDate>
             <sparkle:version>21</sparkle:version>
