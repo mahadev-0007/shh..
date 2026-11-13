@@ -73,6 +73,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key>          <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>    <string>12.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Voice mode in a remote session (Claude Code) records through this Mac's microphone, only while you hold the voice key.</string>
   <key>SUFeedURL</key>                 <string>$FEED_URL</string>
   <key>SUPublicEDKey</key>             <string>$PUBLIC_KEY</string>
   <key>SUEnableInstallerLauncherService</key> <false/>

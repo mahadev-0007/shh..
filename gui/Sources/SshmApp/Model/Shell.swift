@@ -82,6 +82,16 @@ enum Shell {
         if let cwd, !cwd.isEmpty { parts += ["-c", quotePath(cwd)] }
         parts.append("--")
 
+        // Scrolling. With tmux's mouse off, the pane is an alternate screen the
+        // terminal can't scroll, so the wheel goes in as ↑/↓ — which Claude
+        // Code reads as prompt history. Mouse on hands the wheel to tmux, which
+        // scrolls its own scrollback like a native terminal (and still passes it
+        // through to apps that track the mouse themselves). Set per session,
+        // chained after new-session, so it applies on create *and* re-attach,
+        // works before a tmux server exists, and leaves ~/.tmux.conf alone.
+        // `\;` reaches tmux as a bare `;`, its command separator.
+        let after = "\\; set-option -q mouse on"
+
         // Find tmux, and run the session plainly when there isn't one. The
         // capability probe usually knows already, but the first project
         // opened on a server races it — and `exec tmux` with no tmux killed
@@ -97,7 +107,7 @@ enum Shell {
             + "for c in \(tmuxPaths); do [ -z \"$t\" ] && [ -x \"$c\" ] && t=$c; done; "
             + "if [ -n \"$t\" ]; then "
             + "\"$t\" set-option -g allow-passthrough on >/dev/null 2>&1; "
-            + "exec " + parts.joined(separator: " ") + " " + inner + "; fi; "
+            + "exec " + parts.joined(separator: " ") + " " + inner + " " + after + "; fi; "
             + "exec " + inner
         // sh explicitly: the login shell on the far side may not be POSIX
         return "exec sh -c " + quote(script)
@@ -148,6 +158,11 @@ enum Shell {
         }
 
         guard !inner.isEmpty else { return nil }
+        // shh's arecord stand-in goes first, so Claude Code's voice mode
+        // records through this Mac's microphone (see VoiceBridge)
+        if AppModel.shared.settings.voiceInput {
+            inner.insert("PATH=\"\(VoiceBridge.remoteBin):$PATH\"; export PATH", at: 0)
+        }
         let script = inner.joined(separator: "\n")
         let wrapper = agent?.shell ?? AgentDef.defaultShell
         guard isSafe(wrapper) else { return nil }

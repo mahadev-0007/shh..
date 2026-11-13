@@ -201,6 +201,8 @@ struct AppSettings: Codable, Equatable {
     var durableSessions: Bool = true
     /// Retry automatically when a connection drops.
     var autoReconnect: Bool = true
+    /// Lend this Mac's microphone to Claude Code's voice mode on the server.
+    var voiceInput: Bool = true
 
     var notifyOnBell: Bool = true
     var notifyOnRemote: Bool = true
@@ -229,6 +231,7 @@ struct AppSettings: Codable, Equatable {
         // silently resets to its default on load
         durableSessions = lenient(c, .durableSessions, d.durableSessions)
         autoReconnect = lenient(c, .autoReconnect, d.autoReconnect)
+        voiceInput = lenient(c, .voiceInput, d.voiceInput)
         notifyOnBell = lenient(c, .notifyOnBell, d.notifyOnBell)
         notifyOnRemote = lenient(c, .notifyOnRemote, d.notifyOnRemote)
         notifyOnDisconnect = lenient(c, .notifyOnDisconnect, d.notifyOnDisconnect)

@@ -152,6 +152,13 @@ final class SettingsPageVC: PageViewController {
                                  + "exited yourself, or one refused for a bad password, is "
                                  + "never retried."))
 
+        body.addWide(FormRow("Voice input", toggle(\.voiceInput,
+                                                   #selector(voiceInputChanged)),
+                             hint: "Claude Code's voice mode on the server hears this Mac's "
+                                 + "microphone, through the session's own SSH connection. The "
+                                 + "mic is only open while you hold the voice key. Applies to "
+                                 + "sessions started after it's turned on."))
+
         let note = NSTextField(wrappingLabelWithString:
             "Duplicate a session by right-clicking its tab, or with ⇧⌘D. Each duplicate gets "
           + "its own agent on the server, so two tabs on one project are genuinely independent.")
@@ -163,6 +170,9 @@ final class SettingsPageVC: PageViewController {
 
     @objc private func durableChanged(_ s: NSSwitch) {
         AppModel.shared.updateSettings { $0.durableSessions = s.state == .on }
+    }
+    @objc private func voiceInputChanged(_ s: NSSwitch) {
+        AppModel.shared.updateSettings { $0.voiceInput = s.state == .on }
     }
     @objc private func autoReconnectChanged(_ s: NSSwitch) {
         AppModel.shared.updateSettings { $0.autoReconnect = s.state == .on }

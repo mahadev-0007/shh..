@@ -183,6 +183,7 @@ final class SSHSession: NSObject, LocalProcessTerminalViewDelegate {
                                   environment: env, execName: nil)
         }
         state = .running
+        VoiceBridge.shared.attach(self)
 
         // A connection that fails immediately will come straight back through
         // processTerminated; only call it a recovery once it has actually held.
