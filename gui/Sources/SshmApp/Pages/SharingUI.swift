@@ -18,23 +18,37 @@ final class SharingPanel: NSObject {
         toggle.target = self
         toggle.action = #selector(toggled)
         out.append(FormRow("Allow remote sessions", toggle,
-                           hint: "Let people you invite ssh into this Mac over Tailscale. "
-                               + "Each invite works once, for one person, and you approve "
-                               + "them when they use it. Turning this off removes everyone.",
+                           hint: "You approve each person when they use their invite. "
+                               + "Turning this off removes everyone.",
                            labelWidth: 150))
 
         guard access.file.enabled else { return out }
 
-        out.append(FormRow("Tailscale", statusView(), labelWidth: 150))
-        out.append(FormRow("Remote Login", remoteLoginView(), labelWidth: 150))
+        let ready = access.isReady
+        if ready, case .listening(let me) = access.status {
+            out.append(FormRow("Status",
+                               statusLabel(.online, text: "Ready — people you invite reach this "
+                                   + "Mac at \(me.dnsName.isEmpty ? me.ipv4 : me.dnsName)"),
+                               labelWidth: 150))
+        } else {
+            out.append(sectionHeader("Finish setup"))
+            out.append(tailscaleStep())
+            out.append(remoteLoginStep())
+        }
 
-        let newInvite = SoftButton("New invite", symbol: "plus", style: .primary,
-                                   accent: Pastel.color(5))
-        newInvite.onClick = { [weak self] in self?.makeInvite() }
-        out.append(sectionHeader("Invites", newInvite))
         let invites = access.file.invites.filter { !$0.isExpired }
-        if invites.isEmpty {
-            out.append(note("No open invites. An invite expires 15 minutes after you make it."))
+        if ready {
+            let newInvite = SoftButton("Invite someone", symbol: "plus", style: .primary,
+                                       accent: Pastel.color(5))
+            newInvite.onClick = { [weak self] in self?.makeInvite() }
+            out.append(sectionHeader("Invites", newInvite))
+            if invites.isEmpty {
+                out.append(note("No open invites. Each invite works once and expires after "
+                              + "15 minutes."))
+            }
+        } else {
+            out.append(sectionHeader("Invites"))
+            out.append(note("Finish the steps above and you can invite someone."))
         }
         let time = DateFormatter()
         time.timeStyle = .short
@@ -64,59 +78,85 @@ final class SharingPanel: NSObject {
         }
 
         out.append(note(
-            "Guests sign in as \(NSUserName()) with their own key, accepted only from their "
-          + "device's Tailscale address, with port and agent forwarding turned off. Access "
-          + "lasts while this switch is on, even if shh is closed."))
+            "Guests sign in as \(NSUserName()) with their own key, and only from their own "
+          + "device on Tailscale. Access lasts while the switch is on, even if shh is closed."))
         return out
     }
 
-    // MARK: - pieces
+    // MARK: - setup steps
 
-    private func statusView() -> NSView {
+    private enum StepState { case done, todo, working }
+
+    private func step(_ state: StepState, title: String, subtitle: String,
+                      buttons: [NSView] = []) -> NSView {
+        switch state {
+        case .done:
+            return row(icon: "checkmark.circle.fill", tint: Ink.success, title: title,
+                       subtitle: subtitle, buttons: buttons)
+        case .todo:
+            return row(icon: "exclamationmark.circle.fill", tint: Ink.warning, title: title,
+                       subtitle: subtitle, buttons: buttons)
+        case .working:
+            return row(icon: "ellipsis.circle", tint: Text.muted, title: title,
+                       subtitle: subtitle, buttons: buttons)
+        }
+    }
+
+    private func checkAgain() -> NSView {
+        let b = SoftButton("Check again", style: .quiet)
+        b.onClick = { RemoteAccess.shared.recheck() }
+        return b
+    }
+
+    private func tailscaleStep() -> NSView {
         switch access.status {
-        case .off:
-            return statusLabel(.idle, text: "Off")
-        case .starting:
-            return statusLabel(.connecting, text: "Starting…")
+        case .off, .starting:
+            return step(.working, title: "Checking Tailscale…", subtitle: "One moment.")
         case .listening(let me):
-            let where_ = me.dnsName.isEmpty ? me.ipv4 : "\(me.dnsName) (\(me.ipv4))"
-            return statusLabel(.online, text: "Ready on \(where_)")
+            return step(.done, title: "Tailscale is connected",
+                        subtitle: me.dnsName.isEmpty ? me.ipv4 : me.dnsName)
         case .problem(let msg):
-            let l = statusLabel(.offline, text: msg)
+            let app = "/Applications/Tailscale.app"
             if Tailscale.cli == nil {
-                let get = LinkButton("Download Tailscale")
+                let get = SoftButton("Get Tailscale", symbol: "arrow.down.circle", style: .primary,
+                                     accent: Pastel.color(5))
                 get.onClick = {
                     NSWorkspace.shared.open(URL(string: "https://tailscale.com/download/mac")!)
                 }
-                return stack([l, get])
+                return step(.todo, title: "Install Tailscale",
+                            subtitle: "It's the private network your guests reach this Mac over.",
+                            buttons: [checkAgain(), get])
             }
-            return l
+            var buttons = [checkAgain()]
+            if FileManager.default.fileExists(atPath: app) {
+                let open = SoftButton("Open Tailscale", style: .primary, accent: Pastel.color(5))
+                open.onClick = { NSWorkspace.shared.open(URL(fileURLWithPath: app)) }
+                buttons.append(open)
+            }
+            return step(.todo, title: "Connect Tailscale", subtitle: msg, buttons: buttons)
         }
     }
 
-    private func remoteLoginView() -> NSView {
-        let open = LinkButton("Open Sharing settings")
-        open.onClick = { RemoteAccess.openRemoteLoginSettings() }
-        let recheck = LinkButton("Check again")
-        recheck.onClick = { RemoteAccess.shared.checkRemoteLogin() }
+    private func remoteLoginStep() -> NSView {
         switch access.remoteLoginOn {
-        case .some(true):
-            return statusLabel(.online, text: "On")
-        case .some(false):
-            return stack([statusLabel(.warning,
-                                      text: "Off — guests can't sign in until you turn it on"),
-                          open, recheck])
         case .none:
-            return statusLabel(.connecting, text: "Checking…")
+            return step(.working, title: "Checking Remote Login…", subtitle: "One moment.")
+        case .some(true) where access.hostKeyReady:
+            return step(.done, title: "Remote Login is on",
+                        subtitle: "macOS accepts ssh sign-ins on this Mac.")
+        case .some(true):
+            return step(.working, title: "Finishing Remote Login…",
+                        subtitle: "Preparing this Mac's ssh key. This takes a few seconds.",
+                        buttons: [checkAgain()])
+        case .some(false):
+            let on = SoftButton("Turn On", symbol: "power", style: .primary,
+                                accent: Pastel.color(5))
+            on.onClick = { RemoteAccess.shared.turnOnRemoteLogin() }
+            return step(.todo, title: "Turn on Remote Login",
+                        subtitle: "macOS needs this before guests can sign in. "
+                                + "You'll be asked for your Mac password.",
+                        buttons: [on])
         }
-    }
-
-    private func stack(_ views: [NSView]) -> NSStackView {
-        let s = NSStackView(views: views)
-        s.orientation = .horizontal
-        s.spacing = Space.md
-        s.alignment = .centerY
-        return s
     }
 
     private func note(_ text: String) -> NSTextField {
@@ -127,7 +167,8 @@ final class SharingPanel: NSObject {
         return n
     }
 
-    private func row(icon: String, title: String, subtitle: String, buttons: [NSView]) -> NSView {
+    private func row(icon: String, tint: NSColor = Text.secondary, title: String,
+                     subtitle: String, buttons: [NSView]) -> NSView {
         let card = CardView()
         card.accent = Pastel.color(5)
         card.tintStrength = 0.05
@@ -135,7 +176,7 @@ final class SharingPanel: NSObject {
         let img = NSImageView()
         img.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 16, weight: .medium))
-        img.contentTintColor = Text.secondary
+        img.contentTintColor = tint
 
         let t = NSTextField(labelWithString: title)
         t.font = Fonts.bodyMed
@@ -187,13 +228,13 @@ final class SharingPanel: NSObject {
 
     private func makeInvite() {
         let ask = NSAlert()
-        ask.messageText = "Who is this invite for?"
-        ask.informativeText = "Only you see this name. It's shown when they use the invite, "
-            + "so you know who you're letting in."
+        ask.messageText = "Who are you inviting?"
+        ask.informativeText = "Just a name for your own list, so you know who you're "
+            + "letting in. You'll get a link to send them."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.placeholderString = "Alice"
         ask.accessoryView = field
-        ask.addButton(withTitle: "Create")
+        ask.addButton(withTitle: "Create Link")
         ask.addButton(withTitle: "Cancel")
         ask.window.initialFirstResponder = field
         guard ask.runModal() == .alertFirstButtonReturn else { return }
@@ -208,26 +249,26 @@ final class SharingPanel: NSObject {
         showInvite(code, label: label)
     }
 
+    /// The link is already on the clipboard by the time this shows: the only
+    /// thing left for the host to do is paste it to their guest.
     private func showInvite(_ code: InviteCode, label: String) {
         let link = code.string
-        let a = NSAlert()
-        a.messageText = label.isEmpty ? "Invite ready" : "Invite for \(label)"
-        a.informativeText =
-            "Send this to them directly. It works once and expires in 15 minutes. "
-          + "When they use it, you'll be asked to approve them.\n\n"
-          + "They need shh and Tailscale, and must be able to reach this Mac on Tailscale — "
-          + "the same tailnet, or share this machine with them from the Tailscale admin console."
-        let text = NSTextField(wrappingLabelWithString: link)
-        text.isSelectable = true
-        text.font = Fonts.mono(11)
-        text.frame = NSRect(x: 0, y: 0, width: 360, height: 72)
-        a.accessoryView = text
-        a.addButton(withTitle: "Copy Link")
-        a.addButton(withTitle: "Done")
-        if a.runModal() == .alertFirstButtonReturn {
+        let copy = {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(link, forType: .string)
         }
+        copy()
+        let who = label.isEmpty ? "them" : label
+        let a = NSAlert()
+        a.messageText = "Invite link copied"
+        a.informativeText =
+            "Paste it in a message to \(who). They open it in shh, and you'll be asked to "
+          + "approve them. The link works once and expires in 15 minutes.\n\n"
+          + "They need shh and Tailscale, and to be on your tailnet — or share this Mac "
+          + "with them from the Tailscale admin console."
+        a.addButton(withTitle: "Done")
+        a.addButton(withTitle: "Copy Again")
+        if a.runModal() == .alertSecondButtonReturn { copy() }
     }
 
     private func confirmRevoke(_ g: RemoteAccess.Guest) {

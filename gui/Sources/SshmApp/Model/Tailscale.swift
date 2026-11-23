@@ -81,6 +81,13 @@ enum Tailscale {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: cli)
         p.arguments = args
+        // The binary inside Tailscale.app is both the GUI and the CLI, and it
+        // guesses which from its environment. Launched from an app rather than
+        // a terminal it guesses GUI, prints "The Tailscale GUI failed to
+        // start" and exits 0. This makes it the CLI regardless.
+        var env = ProcessInfo.processInfo.environment
+        env["TAILSCALE_BE_CLI"] = "1"
+        p.environment = env
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err

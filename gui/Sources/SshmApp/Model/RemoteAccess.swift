@@ -55,6 +55,16 @@ final class RemoteAccess {
     private(set) var status: Status = .off
     /// nil until checked.
     private(set) var remoteLoginOn: Bool?
+    /// sshd has a host key to put in an invite. macOS only makes one the first
+    /// time something connects after Remote Login is turned on.
+    private(set) var hostKeyReady = false
+    private var keyWaits = 0
+
+    /// Nothing left for the host to set up: invites can be made and used.
+    var isReady: Bool {
+        guard case .listening = status else { return false }
+        return remoteLoginOn == true && hostKeyReady
+    }
 
     private let store = AtomicFile(url: ConfigPaths.dir.appendingPathComponent("sharing.json"))
     private var server: MiniHTTP.Server?
@@ -79,6 +89,14 @@ final class RemoteAccess {
             file = f
         }
         reconcile()
+        // coming back from System Settings or Tailscale is the moment the
+        // answer is most likely to have changed
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.file.enabled, !self.isReady else { return }
+            self.recheck()
+        }
     }
 
     // MARK: - lifecycle
@@ -170,13 +188,75 @@ final class RemoteAccess {
         changed()
     }
 
-    func checkRemoteLogin() {
+    /// Look again at everything the setup steps report.
+    func recheck() {
+        keyWaits = 0
+        checkRemoteLogin()
+        if file.enabled, case .problem = status { start() }
+    }
+
+    func checkRemoteLogin(then: ((Bool) -> Void)? = nil) {
         MiniHTTP.probe(host: "127.0.0.1", port: 22) { [weak self] on in
-            guard let self, self.remoteLoginOn != on else { return }
-            self.remoteLoginOn = on
-            self.changed()
+            guard let self else { return }
+            let keyed = on && !SSHKeys.hostKeys().isEmpty
+            if self.remoteLoginOn != on || self.hostKeyReady != keyed {
+                self.remoteLoginOn = on
+                self.hostKeyReady = keyed
+                self.changed()
+            }
+            if on && !keyed && self.keyWaits < 6 {
+                self.keyWaits += 1
+                self.nudgeHostKey()
+            }
+            then?(on)
         }
     }
+
+    /// A real ssh handshake with ourselves makes macOS generate the host keys.
+    private func nudgeHostKey() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keyscan")
+            p.arguments = ["-T", "3", "127.0.0.1"]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            if (try? p.run()) != nil { p.waitUntilExit() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.checkRemoteLogin() }
+        }
+    }
+
+    /// Turn Remote Login on for the user: one password prompt instead of a trip
+    /// through System Settings. If that doesn't take, System Settings opens.
+    func turnOnRemoteLogin() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", Self.remoteLoginScript]
+            let err = Pipe()
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = err
+            var cancelled = false
+            if (try? p.run()) != nil {
+                let text = String(data: err.fileHandleForReading.readDataToEndOfFile(),
+                                  encoding: .utf8) ?? ""
+                p.waitUntilExit()
+                cancelled = text.contains("-128")   // they pressed Cancel
+            }
+            guard !cancelled else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                guard let self else { return }
+                self.keyWaits = 0
+                self.checkRemoteLogin { on in
+                    if !on { Self.openRemoteLoginSettings() }
+                }
+            }
+        }
+    }
+
+    private static let remoteLoginScript =
+        "do shell script \"/bin/launchctl load -w /System/Library/LaunchDaemons/ssh.plist\" "
+      + "with prompt \"shh wants to turn on Remote Login so the people you invite can "
+      + "sign in to this Mac.\" with administrator privileges"
 
     static func openRemoteLoginSettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")!
@@ -190,7 +270,7 @@ final class RemoteAccess {
         var errorDescription: String? {
             switch self {
             case .notListening:
-                return "Remote sessions aren't ready yet. Check the status above."
+                return "Remote sessions aren't ready yet. Finish the setup steps first."
             case .noHostKey:
                 return "This Mac has no ssh host key yet. Turn on Remote Login first."
             }

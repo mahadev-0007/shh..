@@ -239,7 +239,7 @@ final class SettingsPageVC: PageViewController {
     // MARK: - sharing
 
     private func buildSharing() {
-        pageSubtitle = "Let someone you invite ssh into this Mac over Tailscale."
+        pageSubtitle = "Let someone you invite open a terminal on this Mac, over Tailscale."
         sharing.build().forEach { body.addWide($0) }
         RemoteAccess.shared.checkRemoteLogin()
     }

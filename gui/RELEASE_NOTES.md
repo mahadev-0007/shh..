@@ -1,13 +1,17 @@
-# shh 1.3.0
+# shh 1.3.1
 
-Voice mode works in remote sessions, and scrolling feels native again.
+Sharing this Mac over Tailscale now works, and setting it up takes a couple
+of clicks.
 
-- **Voice mode over SSH.** Claude Code's voice mode on the server now hears
-  this Mac's microphone, through the session's own SSH connection. Hold the
-  voice key and talk, just like running Claude locally. The mic is only open
-  while you're holding the key. macOS asks for microphone access the first
-  time. Turn it off under Settings › Sessions › Voice input. Start Claude in a
-  new session after updating: sessions already running keep their old setup.
-- **Native scrolling in durable sessions.** The scroll wheel now scrolls back
-  through the session's output, instead of stepping through Claude Code's
-  prompt history. Hold Shift while dragging to select text the usual way.
+- **Sharing no longer fails with "Unexpected output from tailscale status".**
+  shh could not read Tailscale's status when Tailscale was installed as the
+  Mac app, so remote sessions never became ready. It does now.
+- **Guided setup.** Settings › Sharing shows what is still missing, one step
+  at a time, each with a button that fixes it. When everything is in place it
+  collapses to a single "Ready" line.
+- **Turn on Remote Login from shh.** One button and your Mac password, instead
+  of a trip through System Settings. If that doesn't take, System Settings
+  opens as before.
+- **Simpler invites.** "Invite someone" copies the link for you, ready to
+  paste into a message. The button only appears once setup is complete, so the
+  "no ssh host key" error is gone.
