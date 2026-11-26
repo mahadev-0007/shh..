@@ -418,9 +418,9 @@ impl Session {
         // Remote notifications need to see the byte stream before VTE eats it.
         if settings.notify_on_remote {
             let sock = self.app().and_then(|a| a.notify_socket.clone());
-            if let (Some(sock), Ok(exe)) = (sock, std::env::current_exe()) {
+            if let (Some(sock), Some(exe)) = (sock, crate::self_path()) {
                 let mut wrapped = vec![
-                    exe.to_string_lossy().into_owned(),
+                    exe,
                     "--pty-proxy".into(),
                     sock,
                     self.id.clone(),

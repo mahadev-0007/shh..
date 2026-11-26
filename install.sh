@@ -21,12 +21,23 @@ if [ "$(uname -s)" = "Linux" ]; then
         exit 1
     }
     ARCH=$(dpkg --print-architecture)
-    echo "Looking up the latest release of shh ($ARCH)…"
+    # Two packages per architecture. The regular one uses the system's GTK and
+    # needs Ubuntu 24.04 or newer; the self-contained one carries its own
+    # libraries for older systems such as Ubuntu 22.04.
+    KIND="shh-bundled"
+    ADW=$(apt-cache policy libadwaita-1-0 2>/dev/null | sed -n 's/^ *Candidate: *//p')
+    if apt-cache show libvte-2.91-gtk4-0 >/dev/null 2>&1 \
+        && [ -n "$ADW" ] && [ "$ADW" != "(none)" ] \
+        && dpkg --compare-versions "$ADW" ge 1.5; then
+        KIND="shh"
+    fi
+    [ -n "$SHH_KIND" ] && KIND="$SHH_KIND"
+    echo "Looking up the latest release of shh ($ARCH, $KIND)…"
     URL=$(curl -fsSL "$API" \
         | grep -o '"browser_download_url": *"[^"]*"' \
         | sed 's/.*"\(http[^"]*\)"/\1/' \
-        | grep "_${ARCH}\.deb$" | head -1)
-    [ -n "$URL" ] || { echo "no .deb for $ARCH on the latest release"; exit 1; }
+        | grep "/${KIND}_[^/]*_${ARCH}\.deb$" | head -1)
+    [ -n "$URL" ] || { echo "no $KIND .deb for $ARCH on the latest release"; exit 1; }
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
     DEB="$TMP/$(basename "$URL")"

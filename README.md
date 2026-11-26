@@ -82,10 +82,10 @@ together. Packages are on the [latest release](https://github.com/mahadev-0007/s
 | Platform | Install |
 | --- | --- |
 | macOS 12+ (Apple silicon and Intel) | `curl -fsSL https://raw.githubusercontent.com/mahadev-0007/shh../main/install.sh \| sh` — or the `.dmg` from the release |
-| Ubuntu 24.04+ (amd64 and arm64) | the same command — it installs the `.deb` for your architecture — or download the `.deb` and run `sudo apt install ./shh_*.deb` |
+| Ubuntu 24.04+ (amd64 and arm64) | the same command — it installs the `.deb` for your architecture — or download `shh_*.deb` and run `sudo apt install ./shh_*.deb` |
+| Ubuntu 22.04, Debian 12 and other older systems | the same command — it picks `shh-bundled_*.deb`, a larger package that carries its own GTK libraries |
 
-Ubuntu 22.04 is not supported by the desktop app: it lacks the GTK4 terminal
-library the app needs. `sshm` itself runs anywhere with bash and ssh.
+`sshm` itself runs anywhere with bash and ssh.
 The Mac app is described in [gui/README.md](gui/README.md), the Ubuntu app in
 [linux/README.md](linux/README.md).
 

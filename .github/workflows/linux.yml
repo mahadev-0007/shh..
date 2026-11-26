@@ -27,7 +27,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config dpkg-dev \
-            libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
+            libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev \
+            adwaita-icon-theme librsvg2-common
 
       - name: Rust
         run: |
@@ -49,6 +50,29 @@ jobs:
       - name: Build .deb
         working-directory: linux
         run: ./build-deb.sh
+
+      # The self-contained package for systems older than 24.04.
+      - name: Build self-contained .deb
+        working-directory: linux
+        run: ./build-bundle.sh
+
+      # It has to install and start on a real Ubuntu 22.04 userland.
+      - name: Smoke test on Ubuntu 22.04
+        run: |
+          docker run --rm -v "$PWD/linux/dist":/dist ubuntu:22.04 bash -ec '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq /dist/shh-bundled_*.deb xvfb xauth dbus-x11 >/dev/null
+            export XDG_CONFIG_HOME=/tmp/cfg GTK_A11Y=none
+            set +e
+            dbus-run-session -- xvfb-run -a timeout 10 shh > /tmp/shh.log 2>&1
+            code=$?
+            cat /tmp/shh.log
+            # still running when the timeout fired = it started and stayed up
+            [ "$code" -eq 124 ] || { echo "shh exited with $code"; exit 1; }
+            [ -f /tmp/cfg/sshm/sshm.json ] || { echo "config was not written"; exit 1; }
+            echo "shh runs on $(. /etc/os-release; echo $PRETTY_NAME)"
+          '
 
       - uses: actions/upload-artifact@v4
         with:
