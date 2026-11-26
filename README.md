@@ -74,7 +74,22 @@ printf '\033]111\007\033]112\007'
 Press `/` and type. The list narrows as you go, matching against name, user and
 host. `↑`/`↓` still move while filtering, Enter accepts, `esc` clears.
 
-## Install
+## Download
+
+**shh**, the desktop app, and **sshm**, the terminal UI in this README, install
+together. Packages are on the [latest release](https://github.com/mahadev-0007/shh../releases/latest).
+
+| Platform | Install |
+| --- | --- |
+| macOS 12+ (Apple silicon and Intel) | `curl -fsSL https://raw.githubusercontent.com/mahadev-0007/shh../main/install.sh \| sh` — or the `.dmg` from the release |
+| Ubuntu 24.04+ (amd64 and arm64) | the same command — it installs the `.deb` for your architecture — or download the `.deb` and run `sudo apt install ./shh_*.deb` |
+
+Ubuntu 22.04 is not supported by the desktop app: it lacks the GTK4 terminal
+library the app needs. `sshm` itself runs anywhere with bash and ssh.
+The Mac app is described in [gui/README.md](gui/README.md), the Ubuntu app in
+[linux/README.md](linux/README.md).
+
+## Install sshm by hand
 
 ```sh
 chmod +x sshm
@@ -84,7 +99,8 @@ ln -s "$PWD/sshm" /usr/local/bin/sshm     # or anywhere on your PATH
 For saved passwords to be filled in automatically you also need `sshpass`:
 
 ```sh
-brew install sshpass
+brew install sshpass        # macOS
+sudo apt install sshpass    # Ubuntu
 ```
 
 Without it everything still works — `ssh` just prompts for the password itself.
