@@ -773,7 +773,7 @@ server_form() {
         done
         if ! command -v sshpass >/dev/null 2>&1; then
             printf '  %s! sshpass is not installed, so ssh will still prompt.%s\n' "$WARN" "$R"
-            printf '  %s  install it with: brew install sshpass%s\n' "$FAINT" "$R"
+            printf '  %s  install it with: %s%s\n' "$FAINT" "$(sshpass_hint)" "$R"
         fi
     else
         local kdef="$dsecret"
@@ -887,9 +887,89 @@ mouse_off() {
 CLIP_SOCK=""      # ControlMaster socket for the running session
 CLIP_PID=""       # background watcher
 
+# Which clipboard this machine has: mac (pbcopy + osascript), wayland
+# (wl-clipboard) or x11 (xclip). Empty when there is none we can drive.
+CLIP_BACKEND=""
+clip_detect() {
+    [ -n "$CLIP_BACKEND" ] && return 0
+    if command -v pbcopy >/dev/null 2>&1 && command -v osascript >/dev/null 2>&1; then
+        CLIP_BACKEND="mac"
+    elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-paste >/dev/null 2>&1 \
+            && command -v wl-copy >/dev/null 2>&1; then
+        CLIP_BACKEND="wayland"
+    elif [ -n "${DISPLAY:-}" ] && command -v xclip >/dev/null 2>&1; then
+        CLIP_BACKEND="x11"
+    else
+        return 1
+    fi
+}
+
 clip_available() {
     [ "${SSHM_CLIP:-1}" = "0" ] && return 1
-    command -v pbcopy >/dev/null 2>&1 && command -v osascript >/dev/null 2>&1
+    clip_detect
+}
+
+# What to tell someone whose clipboard we cannot reach.
+clip_needs() {
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) printf 'clipboard bridge needs pbcopy + osascript' ;;
+        *)      printf 'clipboard bridge needs wl-clipboard (Wayland) or xclip (X11): sudo apt install wl-clipboard xclip' ;;
+    esac
+}
+
+sshpass_hint() {
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) printf 'brew install sshpass' ;;
+        *)      if command -v apt >/dev/null 2>&1; then printf 'sudo apt install sshpass'
+                else printf 'install the sshpass package'; fi ;;
+    esac
+}
+
+# --- Linux primitives. MIME types stand in for UTIs. ---
+clip_lx_types() {   # one MIME type per line
+    case "$CLIP_BACKEND" in
+        wayland) wl-paste -l 2>/dev/null ;;
+        x11)     xclip -selection clipboard -o -t TARGETS 2>/dev/null ;;
+    esac
+}
+
+clip_lx_get() {     # clip_lx_get <mime>  -> bytes on stdout
+    case "$CLIP_BACKEND" in
+        wayland) wl-paste -t "$1" 2>/dev/null ;;
+        x11)     xclip -selection clipboard -o -t "$1" 2>/dev/null ;;
+    esac
+}
+
+clip_lx_put() {     # text on stdin -> clipboard
+    case "$CLIP_BACKEND" in
+        wayland) wl-copy 2>/dev/null ;;
+        # xclip stays alive to serve the selection; detach it from our pipes
+        x11)     xclip -selection clipboard -i >/dev/null 2>&1 ;;
+    esac
+}
+
+# The first image flavour on offer, PNG preferred.
+clip_lx_image_type() {
+    local types t
+    types=$(clip_lx_types)
+    for t in image/png image/jpeg image/webp image/tiff image/bmp image/gif; do
+        case "$types" in *"$t"*) printf '%s' "$t"; return 0 ;; esac
+    done
+    return 1
+}
+
+# There is no change counter on Linux, so make one: a checksum of the type
+# list, plus the image bytes when there is an image. Text never gets read.
+clip_lx_change() {
+    local types img
+    types=$(clip_lx_types)
+    case "$types" in
+        *image/*)
+            img=$(clip_lx_image_type)
+            { printf '%s' "$types"; [ -n "$img" ] && clip_lx_get "$img"; } \
+                | cksum | cut -d' ' -f1 ;;
+        *)  printf '%s' "$types" | cksum | cut -d' ' -f1 ;;
+    esac
 }
 
 # NSPasteboard's changeCount is an integer that ticks once per copy, so asking
@@ -900,12 +980,19 @@ clip_available() {
 JXA_PB='ObjC.import("AppKit"); var pb = $.NSPasteboard.generalPasteboard;'
 
 clip_change() {
+    clip_detect
+    if [ "$CLIP_BACKEND" != "mac" ]; then clip_lx_change; return; fi
     osascript -l JavaScript -e "$JXA_PB pb.changeCount" 2>/dev/null
 }
 
 # One long-lived process that prints the change counter once per tick, rather
 # than one osascript launch per tick - the launch is what costs, not the query.
 clip_monitor() {
+    clip_detect
+    if [ "$CLIP_BACKEND" != "mac" ]; then
+        while :; do clip_lx_change; sleep "${SSHM_CLIP_POLL:-1}"; done
+        return
+    fi
     osascript -l JavaScript -e "$JXA_PB \
         var p = ${SSHM_CLIP_POLL:-1}; \
         while (true) { console.log(pb.changeCount); \
@@ -914,6 +1001,8 @@ clip_monitor() {
 
 # The UTIs on the pasteboard - also cheap, because it never touches the bytes.
 clip_types() {
+    clip_detect
+    if [ "$CLIP_BACKEND" != "mac" ]; then clip_lx_types | tr '\n' ','; return; fi
     osascript -l JavaScript -e "$JXA_PB ObjC.deepUnwrap(pb.types).join(',')" 2>/dev/null
 }
 
@@ -926,6 +1015,10 @@ clip_is_image() {
     case "$1" in
         *public.png*|*public.tiff*|*public.jpeg*|*public.heic*)
             return 0 ;;
+        # Linux MIME types. text/uri-list (a copied file) is left out for the
+        # same reason public.file-url is.
+        *image/png*|*image/jpeg*|*image/tiff*|*image/webp*|*image/bmp*)
+            return 0 ;;
     esac
     return 1
 }
@@ -936,6 +1029,9 @@ clip_is_image() {
 clip_to_png() {
     local out="$1" src=""
     rm -f "$out" 2>/dev/null
+
+    clip_detect
+    if [ "$CLIP_BACKEND" != "mac" ]; then clip_lx_to_png "$out"; return; fi
 
     case "$(clip_types)" in *public.file-url*)
         src=$(osascript -e 'POSIX path of (the clipboard as «class furl»)' 2>/dev/null) ;;
@@ -953,6 +1049,34 @@ clip_to_png() {
     fi
 
     clip_write_png "$out"
+}
+
+# Linux counterpart of clip_to_png: a copied image file first, then pixels.
+clip_lx_to_png() {
+    local out="$1" src="" img
+    case "$(clip_lx_types)" in *text/uri-list*)
+        src=$(clip_lx_get text/uri-list | tr -d '\r' | grep -m1 '^file://')
+        src="${src#file://}"
+        # undo percent-encoding (spaces and friends)
+        case "$src" in *%*) src=$(printf '%b' "$(printf '%s' "$src" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')") ;; esac
+        ;;
+    esac
+    if [ -n "$src" ] && [ -f "$src" ]; then
+        case "$src" in
+            *.png|*.PNG|*.jpg|*.JPG|*.jpeg|*.JPEG|*.gif|*.GIF|*.webp|*.WEBP)
+                cp "$src" "$out" 2>/dev/null && [ -s "$out" ] && return 0 ;;
+        esac
+    fi
+
+    img=$(clip_lx_image_type) || return 1
+    if [ "$img" = "image/png" ]; then
+        clip_lx_get image/png > "$out"
+    elif command -v convert >/dev/null 2>&1; then
+        clip_lx_get "$img" | convert - "png:$out" 2>/dev/null
+    else
+        clip_lx_get "$img" > "$out"      # not a PNG, but still an image
+    fi
+    [ -s "$out" ]
 }
 
 clip_write_png() {
@@ -986,7 +1110,11 @@ clip_once() {
     remote=$(clip_push "$tmp" "$sock" "$target")
     rm -f "$tmp"
     [ -n "$remote" ] || return 1
-    printf '%s' "$remote" | pbcopy
+    if [ "$CLIP_BACKEND" = "mac" ]; then
+        printf '%s' "$remote" | pbcopy
+    else
+        printf '%s' "$remote" | clip_lx_put
+    fi
     printf '%s' "$remote"
 }
 
@@ -1188,7 +1316,7 @@ trust_host() {
 # Manual counterpart to the watcher, for a second terminal tab: take whatever
 # image is on the clipboard, put it on the server, print the remote path.
 cmd_paste() {
-    clip_available || die "clipboard bridge needs macOS (pbcopy + osascript)"
+    clip_available || die "$(clip_needs)"
     local sock target remote
     sock=$(ls -t /tmp/sshm-*.sock.target 2>/dev/null | head -1)
     [ -n "$sock" ] || die "no sshm session is open"

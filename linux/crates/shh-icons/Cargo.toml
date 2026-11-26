@@ -1,0 +1,9 @@
+[package]
+name = "shh-icons"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shh-core.workspace = true
+gtk.workspace = true
+adw.workspace = true

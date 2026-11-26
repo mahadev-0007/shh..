@@ -1,0 +1,73 @@
+name: linux
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config dpkg-dev \
+            libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux/target
+          key: cargo-${{ matrix.arch }}-${{ hashFiles('linux/Cargo.lock', 'linux/Cargo.toml') }}
+
+      - name: Test
+        working-directory: linux
+        run: cargo test -p shh-core
+
+      - name: Build .deb
+        working-directory: linux
+        run: ./build-deb.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shh-${{ matrix.arch }}-deb
+          path: linux/dist/*.deb
+          if-no-files-found: error
+
+      # Attach to the release the Mac release script already made: the pushed
+      # tag's, or on a manual run the latest one. Never creates a release, so
+      # the Mac installer's "latest release has a .zip" assumption holds.
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: |
+          TAG="$REF_TAG"
+          [ -n "$TAG" ] || TAG=$(gh release view --json tagName -q .tagName)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" linux/dist/*.deb --clobber
+          else
+            echo "::warning::no release for $TAG; .deb kept as a workflow artifact only"
+          fi

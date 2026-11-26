@@ -1,5 +1,6 @@
 #!/bin/sh
-# Installs the latest release of shh into /Applications.
+# Installs the latest release of shh: into /Applications on macOS, or as a
+# .deb on Ubuntu/Debian.
 #
 #   curl -fsSL https://raw.githubusercontent.com/mahadev-0007/shh../main/install.sh | sh
 #
@@ -11,6 +12,35 @@ set -e
 REPO="${SHH_REPO:-mahadev-0007/shh..}"
 DEST="${SHH_DEST:-/Applications}"
 API="https://api.github.com/repos/$REPO/releases/latest"
+
+# Ubuntu / Debian: the release carries a .deb per architecture. apt resolves
+# the GTK and VTE libraries it needs.
+if [ "$(uname -s)" = "Linux" ]; then
+    command -v dpkg >/dev/null 2>&1 || {
+        echo "This installer supports Debian/Ubuntu. Build from source: see linux/README.md"
+        exit 1
+    }
+    ARCH=$(dpkg --print-architecture)
+    echo "Looking up the latest release of shh ($ARCH)…"
+    URL=$(curl -fsSL "$API" \
+        | grep -o '"browser_download_url": *"[^"]*"' \
+        | sed 's/.*"\(http[^"]*\)"/\1/' \
+        | grep "_${ARCH}\.deb$" | head -1)
+    [ -n "$URL" ] || { echo "no .deb for $ARCH on the latest release"; exit 1; }
+    TMP=$(mktemp -d)
+    trap 'rm -rf "$TMP"' EXIT
+    DEB="$TMP/$(basename "$URL")"
+    echo "Downloading $(basename "$URL")…"
+    curl -fsSL "$URL" -o "$DEB"
+    chmod 644 "$DEB"; chmod 755 "$TMP"      # apt's sandbox user must read it
+    SUDO=""
+    [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+    $SUDO apt-get install -y "$DEB"
+    echo
+    echo "Installed shh. Open it from the app grid, or run:  shh"
+    echo "The terminal version is:  sshm"
+    exit 0
+fi
 
 echo "Looking up the latest release of shh…"
 ASSET=$(curl -fsSL "$API" | python3 -c '

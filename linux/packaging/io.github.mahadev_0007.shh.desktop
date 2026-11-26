@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=shh
+GenericName=SSH Session Manager
+Comment=Open coding agents and shells on your servers
+Exec=shh %u
+Icon=io.github.mahadev_0007.shh
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;terminal;remote;server;tmux;
+MimeType=x-scheme-handler/shh;
+StartupNotify=true
+StartupWMClass=io.github.mahadev_0007.shh

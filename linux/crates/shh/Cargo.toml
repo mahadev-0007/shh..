@@ -1,0 +1,19 @@
+[package]
+name = "shh"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "shh"
+path = "src/main.rs"
+
+[dependencies]
+shh-core.workspace = true
+shh-remote.workspace = true
+shh-sharing.workspace = true
+shh-icons.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+gtk.workspace = true
+adw.workspace = true
+vte.workspace = true
